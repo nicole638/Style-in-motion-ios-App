@@ -1,0 +1,2468 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  ScrollView,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Linking,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { Image } from 'expo-image';
+import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
+import * as ImagePicker from 'expo-image-picker';
+import * as Haptics from 'expo-haptics';
+import { useFonts } from 'expo-font';
+import { CormorantGaramond_600SemiBold, CormorantGaramond_400Regular_Italic } from '@expo-google-fonts/cormorant-garamond';
+import { DMSans_400Regular, DMSans_500Medium, DMSans_600SemiBold, DMSans_700Bold } from '@expo-google-fonts/dm-sans';
+import { ArrowLeft, Image as ImageIcon, X } from 'lucide-react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { CollageItemPicker, COLLAGE_MAX_ITEMS } from '@/components/CollageItemPicker';
+import { TryOnModelSheet } from '@/components/TryOnModelSheet';
+import { StyleJournalCanvas } from '@/components/collage/StyleJournalCanvas';
+import { EditorialCanvas } from '@/components/collage/EditorialCanvas';
+import { EditorialCoverCanvas } from '@/components/collage/EditorialCoverCanvas';
+import { GridCanvas } from '@/components/collage/GridCanvas';
+import { CanvasItem } from '@/components/collage/canvasShared';
+import {
+  COLLAGE_TEMPLATES,
+  CollageTemplate,
+  CollageTemplateId,
+  defaultLayoutFor,
+  getTemplate,
+  rankTemplates,
+} from '@/lib/constants/collageTemplates';
+import { removeBackground, pickCutoutMode, pickCutoutPrompt } from '@/lib/utils/removeBackground';
+import LayoutCarousel from '@/components/collage/LayoutCarousel';
+import { LayoutTemplate, applyLayoutToCutouts } from '@/lib/collage/layouts';
+import { exportCollage } from '@/lib/utils/exportCollage';
+import { persistPickedPhoto } from '@/lib/utils/persistPickedPhoto';
+import { savePhotosToAlbum, buildLookShareUrl } from '@/lib/utils/shareLook';
+import { shareToTikTok } from '@/lib/utils/shareToTikTok';
+import useLookStore, { ClothingItem, CollageLayoutItem, TextLayerItem, PhotoLayerItem, uploadPhoto } from '@/lib/state/lookStore';
+import useAuthStore from '@/lib/state/authStore';
+import useDraftLookStore from '@/lib/state/draftLookStore';
+import useFirstLookStore from '@/lib/state/firstLookStore';
+import { useCollageBackdrops, prefetchBackdrops, type CollageBackdrop } from '@/lib/queries/collageBackdrops';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const PREVIEW_DISPLAY_SIZE = Math.min(SCREEN_WIDTH - 32, 380);
+const TEMPLATE_THUMB_W = 120;
+const TEMPLATE_THUMB_H = 160;
+
+const FEATURE_FLAG = process.env.EXPO_PUBLIC_FEATURE_COLLAGE === 'true';
+
+// Tier-2b text styling presets. Tokens written to TextLayerItem.fontFamily;
+// canvasShared.tsx maps them to real font families at render time.
+const TEXT_FONT_OPTIONS: Array<{ token: string; family: string; label: string }> = [
+  { token: 'serif',        family: 'CormorantGaramond_600SemiBold',     label: 'Editorial' },
+  { token: 'serif-italic', family: 'CormorantGaramond_400Regular_Italic', label: 'Italic' },
+  { token: 'sans',         family: 'DMSans_400Regular',                  label: 'Clean' },
+  { token: 'sans-bold',    family: 'DMSans_700Bold',                     label: 'Bold' },
+];
+
+// Six colors: editorial black, off-white, brand rose, ink navy, gold, pure white.
+const TEXT_COLOR_OPTIONS: string[] = [
+  '#1A1210', // black
+  '#F1E9DB', // off-white
+  '#B87063', // rose
+  '#1F2A44', // navy
+  '#B89968', // gold
+  '#FFFFFF', // white
+];
+
+// Six SiM-brand solid color swatches used as the fallback row when the user
+// taps the "Solid Color" category chip in the backdrop picker.
+const SOLID_BG_COLORS: string[] = [
+  '#F7F4F0', // cream
+  '#F4DCD5', // blush
+  '#D8DCC8', // sage
+  '#1A1210', // ink
+  '#FFFFFF', // white
+  '#C9A06D', // gold
+];
+
+// Human-readable label for each get_collage_backdrops.category enum value.
+// Falls back to title-casing the raw category if a new one appears server-side.
+const BACKDROP_CATEGORY_LABEL: Record<string, string> = {
+  color: 'Color',
+  gradient: 'Gradient',
+  texture: 'Texture',
+  pattern: 'Pattern',
+  studio: 'Studio',
+  lifestyle: 'Lifestyle',
+  outdoor: 'Outdoor',
+};
+function backdropCategoryLabel(cat: string): string {
+  return BACKDROP_CATEGORY_LABEL[cat] ?? (cat.charAt(0).toUpperCase() + cat.slice(1));
+}
+
+// Photoroom Virtual Model accepts the full apparel + bags + shoes + accessories
+// + jewelry catalog (matches cutout EF's inferMode keyword list), not just tops
+// and bottoms. Without bags/shoes/accessories Nicole's canvas with 5 items only
+// surfaced 3 in the Try-on picker.
+const TRY_ON_KEYWORDS = new RegExp(
+  // apparel
+  '\\b(dress|gown|top|shirt|tee|blouse|tank|cami|bodysuit|corset|bustier|crop|halter|' +
+  'pant|jean|short|skirt|trouser|chino|legging|jumpsuit|romper|' +
+  'jacket|coat|trench|parka|puffer|blazer|cardigan|hoodie|sweatshirt|vest|kimono|sweater|moto|biker|bomber|' +
+  // bags
+  'bag|handbag|purse|clutch|backpack|tote|crossbody|satchel|hobo|baguette|' +
+  // shoes
+  'shoe|boot|sandal|sneaker|heel|loafer|pump|mule|wedge|slipper|' +
+  // accessories the model can wear
+  'belt|hat|cap|beanie|scarf|sunglass|watch|tie|' +
+  // jewelry
+  'earring|necklace|bracelet|ring|pendant|chain)s?\\b',
+  'i'
+);
+
+// Categories Photoroom Virtual Model can place on a model. Trust the user's
+// classification first — a black moto jacket named "Vegan Leather" won't match
+// the name regex but is correctly categorized as Outerwear, and the EF can
+// absolutely put it on the model.
+const TRY_ON_CATEGORIES = new Set<string>([
+  'Top', 'Pants', 'Dress', 'Outerwear', 'Shoes', 'Bag', 'Accessory', 'Jewelry',
+]);
+
+function isApparelItem(item: { name?: string | null; category?: string | null } | null | undefined): boolean {
+  if (!item) return false;
+  if (item.category && TRY_ON_CATEGORIES.has(item.category)) return true;
+  // Fallback for items in 'Other' or with a missing category — let the keyword
+  // regex catch obvious garment names so they still surface in the picker.
+  return !!item.name && TRY_ON_KEYWORDS.test(item.name);
+}
+
+// Five-step flow. 'template' was a redundant interstitial — the preview
+// step already has LayoutCarousel for switching layouts inline, so we skip
+// straight from processing to preview now.
+type Step = 'pick' | 'selfie' | 'processing' | 'preview' | 'done';
+
+export default function CollageBuilderScreen() {
+  const [fontsLoaded] = useFonts({
+    CormorantGaramond_600SemiBold,
+    CormorantGaramond_400Regular_Italic,
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_600SemiBold,
+    DMSans_700Bold,
+  });
+
+  const params = useLocalSearchParams<{
+    initialIds?: string;
+    lookId?: string;
+    firstLook?: string;
+    itemIds?: string;
+  }>();
+  // First-look mode passes `itemIds` (CSV) and `firstLook=true`. Old call
+  // sites still use `initialIds` — accept either so we don't break them.
+  const initialIds = useMemo(() => {
+    const raw = params.itemIds ?? params.initialIds ?? '';
+    return raw.split(',').filter(Boolean);
+  }, [params.itemIds, params.initialIds]);
+  const isFirstLook = params.firstLook === 'true';
+  const editingLookId = params.lookId ?? null;
+
+  // Show the first-look tooltip overlay once per mount. Not persisted —
+  // ephemeral, session-only.
+  const [showFirstLookTooltip, setShowFirstLookTooltip] = useState<boolean>(isFirstLook);
+
+  // First-look aesthetic tag for auto-naming the look.
+  const firstLookAesthetic = useFirstLookStore((s) => s.aestheticTags[0] ?? '');
+
+  const [step, setStep] = useState<Step>('pick');
+  const [selectedItems, setSelectedItems] = useState<ClothingItem[]>([]);
+  const [processedItems, setProcessedItems] = useState<CanvasItem[]>([]);
+  const [selfieUri, setSelfieUri] = useState<string | null>(null);
+  const [chosenTemplateId, setChosenTemplateId] = useState<CollageTemplateId>('style-journal');
+  const [layout, setLayout] = useState<CollageLayoutItem[]>([]);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [savedLookId, setSavedLookId] = useState<string | null>(null);
+  const [savedLookCoverUri, setSavedLookCoverUri] = useState<string | null>(null);
+  const [savedLookShortCode, setSavedLookShortCode] = useState<string | null>(null);
+  // Editorial-cover specific: full-body photo for the lookCover slot, plus
+  // per-decoration text overrides keyed by decoration index.
+  const [coverPhotoUri, setCoverPhotoUri] = useState<string | null>(null);
+  const [textOverrides, setTextOverrides] = useState<Record<string, string>>({});
+  const [editingDecorationIdx, setEditingDecorationIdx] = useState<number | null>(null);
+  const [decorationDraft, setDecorationDraft] = useState<string>('');
+  const [selectedLayoutId, setSelectedLayoutId] = useState<string | null>(null);
+  const [layoutSeed, setLayoutSeed] = useState(1);
+  const [textLayers, setTextLayers] = useState<TextLayerItem[]>([]);
+  const [photoLayers, setPhotoLayers] = useState<PhotoLayerItem[]>([]);
+  const [background, setBackground] = useState<string | null>(null);
+  const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
+  const [backdropId, setBackdropId] = useState<string | null>(null);
+  // 'solid' is the local-only chip that shows the 6-swatch fallback grid.
+  // Server categories from get_collage_backdrops drive everything else.
+  const [selectedBackdropCategory, setSelectedBackdropCategory] = useState<string>('all');
+  const [collageName, setCollageName] = useState<string>('My Collage');
+  const [editingTextLayerId, setEditingTextLayerId] = useState<string | null>(null);
+  const [textLayerDraft, setTextLayerDraft] = useState<string>('');
+  // Tier-2b text styling drafts — applied to the layer when Save is tapped.
+  const [textFontDraft, setTextFontDraft] = useState<string>('serif');
+  const [textSizeDraft, setTextSizeDraft] = useState<number>(96);
+  const [textColorDraft, setTextColorDraft] = useState<string>('#1A1210');
+  const [showBgPicker, setShowBgPicker] = useState(false);
+  const [bgCustomDraft, setBgCustomDraft] = useState('');
+  const [showItemPicker, setShowItemPicker] = useState(false);
+  const [showTryOnSheet, setShowTryOnSheet] = useState(false);
+  const [tryOnToast, setTryOnToast] = useState<string | null>(null);
+
+  const canvasRef = useRef<View>(null);
+
+  const closetItems = useLookStore(s => s.closetItems);
+  const looks = useLookStore(s => s.looks);
+  const draftLooksByCreator = useLookStore(s => s.draftLooksByCreator);
+  const fetchLookById = useLookStore(s => s.fetchLookById);
+  const looksHydrated = useLookStore(s => s._hasHydrated);
+  const addLook = useLookStore(s => s.addLook);
+  const updateLook = useLookStore(s => s.updateLook);
+  const updateItem = useLookStore(s => s.updateItem);
+  const creatorId = useAuthStore(s => s.creatorId);
+
+  // Resolve the look being edited from the published `looks` slice first, then
+  // the in-memory drafts map. Drafts (canvas-created AND server-seeded) live in
+  // draftLooksByCreator, never in `looks` — so searching only `looks` left
+  // seeded drafts unresolved, which kicked the screen back to the blank picker.
+  const editingLook = useMemo(() => {
+    if (!editingLookId) return null;
+    const fromLooks = looks.find(l => l.id === editingLookId);
+    if (fromLooks) return fromLooks;
+    for (const list of Object.values(draftLooksByCreator)) {
+      const found = list.find(l => l.id === editingLookId);
+      if (found) return found;
+    }
+    return null;
+  }, [editingLookId, looks, draftLooksByCreator]);
+
+  // Ensure closet items are loaded (may not be if navigating directly to this screen).
+  useEffect(() => {
+    if (creatorId) useLookStore.getState().loadClosetItems(creatorId);
+  }, [creatorId]);
+
+  // A look opened by id might not be in any local slice yet — e.g. a
+  // server-seeded draft that never went through addLook. Fetch it directly by
+  // id before concluding the param is stale. `resolveAttempted` gates the
+  // stale-redirect below so we don't strip the param while the fetch is still
+  // in flight.
+  const [resolveAttempted, setResolveAttempted] = useState(false);
+  useEffect(() => {
+    if (!editingLookId) {
+      setResolveAttempted(false);
+      return;
+    }
+    if (editingLook) return;
+    let cancelled = false;
+    fetchLookById(editingLookId).finally(() => {
+      if (!cancelled) setResolveAttempted(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [editingLookId, editingLook, fetchLookById]);
+
+  // If we landed here with a genuinely stale `lookId` param (the look was
+  // deleted, or the route was restored after the look is gone), drop the param
+  // so the screen reverts to "new collage" mode and the defensive reset below
+  // wipes leftover state. Only after a direct fetch-by-id has also failed —
+  // otherwise we'd strip the param for a valid-but-not-yet-loaded draft.
+  useEffect(() => {
+    if (!editingLookId) return;
+    if (!looksHydrated) return;
+    if (editingLook) return;
+    if (!resolveAttempted) return;
+    router.replace('/collage-builder' as any);
+  }, [editingLookId, looksHydrated, editingLook, resolveAttempted]);
+
+  // Hydrate initial selection from query params if present.
+  useEffect(() => {
+    if (initialIds.length === 0) return;
+    if (selectedItems.length > 0) return;
+    if (editingLookId) return;
+    const matched = closetItems.filter(i => initialIds.includes(i.id));
+    // First-look mode: 3 items always — skip the selfie step too, jump
+    // straight to processing so the canvas comes up immediately. Pre-seed
+    // an aesthetic-based name so the look isn't called "My Collage".
+    if (isFirstLook && matched.length >= 1) {
+      setSelectedItems(matched.slice(0, COLLAGE_MAX_ITEMS));
+      if (firstLookAesthetic) {
+        const capitalized = firstLookAesthetic
+          .split(/\s+/)
+          .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w))
+          .join(' ');
+        setCollageName(`My ${capitalized} Starting Lineup`);
+      } else {
+        setCollageName('My Starting Lineup');
+      }
+      setStep('processing');
+      return;
+    }
+    if (matched.length >= 2) {
+      setSelectedItems(matched.slice(0, COLLAGE_MAX_ITEMS));
+      setStep('selfie');
+    }
+  }, [initialIds, closetItems, selectedItems.length, editingLookId, isFirstLook, firstLookAesthetic]);
+
+  // Defensive reset: when this screen mounts/focuses as a "new collage" (no
+  // lookId, no initialIds), wipe any state left over from a prior session
+  // so the user always starts on a blank picker. Why: a previous edit
+  // session, Fast Refresh, or a stale lookId param can leak step='preview'
+  // and the prior look's items/layout into a fresh build.
+  // How to apply: only resets when stale state is actually present — clean
+  // mounts are a no-op via the functional-setter short-circuits. We run on
+  // mount AND focus because focus events don't always re-fire under
+  // Fast Refresh / instance reuse.
+  const resetToBlankPicker = useCallback(() => {
+    if (editingLookId) return;
+    if (initialIds.length > 0) return;
+    setStep(prev => (prev !== 'pick' ? 'pick' : prev));
+    setSelectedItems(prev => (prev.length > 0 ? [] : prev));
+    setProcessedItems(prev => (prev.length > 0 ? [] : prev));
+    setSelfieUri(prev => (prev !== null ? null : prev));
+    setChosenTemplateId(prev => (prev !== 'style-journal' ? 'style-journal' : prev));
+    setLayout(prev => (prev.length > 0 ? [] : prev));
+    setSelectedItemId(null);
+    setSavedLookId(prev => (prev !== null ? null : prev));
+    setSavedLookCoverUri(prev => (prev !== null ? null : prev));
+    setSavedLookShortCode(prev => (prev !== null ? null : prev));
+    setCoverPhotoUri(prev => (prev !== null ? null : prev));
+    setTextOverrides(prev => (Object.keys(prev).length > 0 ? {} : prev));
+    setTextLayers(prev => (prev.length > 0 ? [] : prev));
+    setPhotoLayers(prev => (prev.length > 0 ? [] : prev));
+    setBackground(prev => (prev !== null ? null : prev));
+    setBackgroundImage(prev => (prev !== null ? null : prev));
+    setBackdropId(prev => (prev !== null ? null : prev));
+    setSelectedBackdropCategory(prev => (prev !== 'all' ? 'all' : prev));
+    setCollageName(prev => (prev !== 'My Collage' ? 'My Collage' : prev));
+    setEditingTextLayerId(prev => (prev !== null ? null : prev));
+  }, [editingLookId, initialIds.length]);
+
+  useEffect(() => {
+    resetToBlankPicker();
+  }, [resetToBlankPicker]);
+
+  useFocusEffect(resetToBlankPicker);
+
+  // Hydrate from existing look when editing — jump directly to preview/interactive step.
+  useEffect(() => {
+    if (!editingLook) return;
+    if (selectedItems.length > 0) return;
+    setSelectedItems(editingLook.items);
+    const cutouts: CanvasItem[] = editingLook.items.map(i => ({ ...i }));
+    setProcessedItems(cutouts);
+    if (editingLook.title) setCollageName(editingLook.title);
+    if (editingLook.collageLayout) {
+      setChosenTemplateId(editingLook.collageLayout.template);
+      // Reconcile the saved layout against the current item set so the canvas
+      // always shows exactly the look's items: drop layout entries whose item
+      // no longer exists (orphaned by an earlier id change), and give any item
+      // that has no saved entry a default position so it still appears and can
+      // be repositioned. On an undrifted look this leaves the layout untouched.
+      const tmpl = getTemplate(editingLook.collageLayout.template);
+      const itemIds = new Set(editingLook.items.map(i => i.id));
+      const keptLayout = editingLook.collageLayout.items.filter(l => itemIds.has(l.itemId));
+      const keptIds = new Set(keptLayout.map(l => l.itemId));
+      const missingItems = editingLook.items.filter(i => !keptIds.has(i.id));
+      if (missingItems.length > 0) {
+        const maxZ = keptLayout.reduce((m, l) => Math.max(m, l.zIndex), 0);
+        const recovered = defaultLayoutFor(tmpl, missingItems).map((l, idx) => ({ ...l, zIndex: maxZ + 1 + idx }));
+        setLayout([...keptLayout, ...recovered]);
+      } else {
+        setLayout(keptLayout);
+      }
+      setTextOverrides(editingLook.collageLayout.textOverrides ?? {});
+      setCoverPhotoUri(editingLook.collageLayout.lookCoverPhotoUri ?? null);
+      setTextLayers(editingLook.collageLayout.text ?? []);
+      setPhotoLayers(editingLook.collageLayout.photos ?? []);
+      setBackground(editingLook.collageLayout.background ?? null);
+      setBackgroundImage(editingLook.collageLayout.backgroundImage ?? null);
+      setBackdropId(editingLook.collageLayout.backdropId ?? null);
+    } else {
+      const template = getTemplate(rankTemplates(editingLook.items.map(i => i.category))[0]?.id ?? 'style-journal');
+      setChosenTemplateId(template.id);
+      setLayout(defaultLayoutFor(template, editingLook.items));
+    }
+    setStep('preview');
+  }, [editingLook, selectedItems.length]);
+
+  // Seed the layout when entering preview from a fresh build (no existing layout yet).
+  useEffect(() => {
+    if (step !== 'preview') return;
+    if (layout.length > 0) return;
+    const items = processedItems.length > 0 ? processedItems : selectedItems;
+    if (items.length === 0) return;
+    const template = getTemplate(chosenTemplateId);
+    setLayout(defaultLayoutFor(template, items));
+  }, [step, chosenTemplateId, layout.length, processedItems, selectedItems]);
+
+  // When the user switches templates, reseed positions so items snap to the new layout.
+  const previousTemplateRef = useRef<CollageTemplateId>(chosenTemplateId);
+  useEffect(() => {
+    if (previousTemplateRef.current === chosenTemplateId) return;
+    previousTemplateRef.current = chosenTemplateId;
+    const items = processedItems.length > 0 ? processedItems : selectedItems;
+    if (items.length === 0) return;
+    setLayout(defaultLayoutFor(getTemplate(chosenTemplateId), items));
+    setSelectedItemId(null);
+    setSelectedLayoutId(null);
+  }, [chosenTemplateId, processedItems, selectedItems]);
+
+  // Clear selected layout when item count changes — old id no longer matches.
+  const previousItemCountRef = useRef(selectedItems.length);
+  useEffect(() => {
+    const count = (processedItems.length > 0 ? processedItems : selectedItems).length;
+    if (previousItemCountRef.current !== count) {
+      previousItemCountRef.current = count;
+      setSelectedLayoutId(null);
+    }
+  }, [processedItems, selectedItems]);
+
+  // Background removal kicks off when step becomes 'processing'.
+  //
+  // Order of operations:
+  //   1. Refresh closetItems from the DB so we pick up any cutout_photo_url
+  //      updates that happened server-side since the app loaded (e.g. our
+  //      cutout-item-photo EF re-cut an item using the latest seg+ghost
+  //      pipeline). Without this step, the local lookStore cache wins and
+  //      we end up rendering the OLD model-included cutout in the canvas
+  //      even though the DB has a fresh polished one.
+  //   2. For each selectedItem, look up the freshest cutout_photo_url from
+  //      the refreshed closet store. If still missing, fall back to the
+  //      legacy removeBackground util.
+  useEffect(() => {
+    if (step !== 'processing') return;
+    let cancelled = false;
+    (async () => {
+      // Step 1 — refresh from DB so we trust whatever cutout_photo_url
+      // the EF most recently produced.
+      if (creatorId) {
+        try {
+          await useLookStore.getState().loadClosetItems(creatorId);
+        } catch (e) {
+          console.warn('[collage-builder] closet refresh before processing failed', e);
+        }
+      }
+      if (cancelled) return;
+      const freshCloset = useLookStore.getState().closetItems;
+      const freshById = new Map(freshCloset.map((i) => [i.id, i]));
+
+      const results = await Promise.all(
+        selectedItems.map(async (item): Promise<CanvasItem> => {
+          // Step 2 — picker is canonical: if item.cutout_photo_url is
+          // already set, CollageItemPicker.applyPhotoOverride baked in a
+          // per-candidate cutout we must NOT clobber. Only fall back to a
+          // DB-fresh cutout when the picker did not resolve one. We never
+          // spread ...fresh because fresh.photo_url / fresh.cutout_photo_url
+          // would overwrite the user-chosen candidate.
+          const fresh = freshById.get(item.id);
+          if (item.cutout_photo_url) {
+            return { ...item };
+          }
+          if (fresh?.cutout_photo_url) {
+            return { ...item, cutout_photo_url: fresh.cutout_photo_url };
+          }
+          const photoUri = (fresh?.photoUri ?? item.photoUri) || undefined;
+          if (!photoUri) return { ...item };
+          // Mode picked from item.category — ghostMannequin only for body-worn
+          // garments (top/dress/outerwear). Everything else uses bgRemove so
+          // we don't drop pants from a top+pants model photo or split
+          // multi-component jewelry. See pickCutoutMode comment.
+          const mode = pickCutoutMode(item.category);
+          const prompt = pickCutoutPrompt(item.category);
+          const cutout = await removeBackground(photoUri, mode, prompt);
+          if (cutout && cutout !== photoUri) {
+            updateItem(item.id, { cutout_photo_url: cutout }).catch((e) =>
+              console.warn('[collage-builder] failed to persist cutout cache', e)
+            );
+          }
+          return { ...item, cutout_photo_url: cutout };
+        })
+      );
+      if (cancelled) return;
+      setProcessedItems(results);
+      // Pick the best-fit template up-front based on the categories present.
+      // Preview's LayoutCarousel lets the creator switch on the fly if they
+      // want something different, so we no longer block on a separate
+      // template-picker step.
+      const ranked = rankTemplates(results.map((i) => i.category));
+      setChosenTemplateId(ranked[0]?.id ?? 'style-journal');
+      setStep('preview');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step, selectedItems, creatorId, updateItem]);
+
+  const handlePickConfirm = useCallback((items: ClothingItem[]) => {
+    setSelectedItems(items);
+    setStep('selfie');
+  }, []);
+
+  // Called when the creator confirms a new item selection from the in-preview picker.
+  // Removed items are filtered out of layout/processedItems/selectedItems.
+  // Added items get a center-canvas placement so the creator can drag them into position.
+  const handleItemPickerConfirm = useCallback((newItems: ClothingItem[]) => {
+    setShowItemPicker(false);
+    const newIds = new Set(newItems.map(i => i.id));
+    const currentIds = new Set(layout.map(l => l.itemId));
+
+    // Build updated layout: keep existing entries for items that remain, add center entries for new ones.
+    const maxZ = layout.reduce((m, l) => Math.max(m, l.zIndex), 0);
+    let nextMaxZ = maxZ;
+    const keptLayout = layout.filter(l => newIds.has(l.itemId));
+    const addedLayouts = newItems
+      .filter(item => !currentIds.has(item.id))
+      .map(item => {
+        nextMaxZ += 1;
+        return {
+          itemId: item.id,
+          x: 540,
+          y: 540,
+          scale: 0.5,
+          rotation: 0,
+          zIndex: nextMaxZ,
+        };
+      });
+    setLayout([...keptLayout, ...addedLayouts]);
+
+    // Update selectedItems — preserve order of existing, append new ones.
+    setSelectedItems(newItems);
+
+    // Update processedItems — keep existing CanvasItems for survivors, build new ones for additions.
+    setProcessedItems(prev => {
+      const kept = prev.filter(p => newIds.has(p.id));
+      const keptIds = new Set(kept.map(p => p.id));
+      const added: CanvasItem[] = newItems
+        .filter(item => !keptIds.has(item.id))
+        .map(item => ({ ...item }) as CanvasItem);
+      return [...kept, ...added];
+    });
+
+    setSelectedItemId(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }, [layout]);
+
+  const handleAddSelfie = useCallback(async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (perm.status !== 'granted') {
+        Alert.alert('Permission needed', 'We need access to your photo library to pick a selfie.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!res.canceled && res.assets[0]?.uri) {
+        const stableUri = await persistPickedPhoto(res.assets[0].uri);
+        setSelfieUri(stableUri);
+      }
+    } catch (e) {
+      console.warn('[collage-builder] selfie pick failed', e);
+    }
+  }, []);
+
+  const handleSelfieContinue = useCallback(() => {
+    setStep('processing');
+  }, []);
+
+  const handleCommitItem = useCallback(
+    (itemId: string, next: { x: number; y: number; scale: number; rotation: number }) => {
+      setLayout(prev => prev.map(p => p.itemId === itemId ? { ...p, ...next } : p));
+    },
+    []
+  );
+
+  const handleSelectItem = useCallback((itemId: string | null) => {
+    if (itemId == null) {
+      setSelectedItemId(null);
+      return;
+    }
+    setSelectedItemId(itemId);
+    // Bring tapped item to front across all layer arrays.
+    setLayout(prev => {
+      if (!prev.find(p => p.itemId === itemId)) return prev;
+      const maxZ = prev.reduce((m, p) => Math.max(m, p.zIndex), 0);
+      return prev.map(p => p.itemId === itemId ? { ...p, zIndex: maxZ + 1 } : p);
+    });
+    setTextLayers(prev => {
+      if (!prev.find(l => l.id === itemId)) return prev;
+      const maxZ = prev.reduce((m, l) => Math.max(m, l.zIndex), 0);
+      return prev.map(l => l.id === itemId ? { ...l, zIndex: maxZ + 1 } : l);
+    });
+    setPhotoLayers(prev => {
+      if (!prev.find(l => l.id === itemId)) return prev;
+      const maxZ = prev.reduce((m, l) => Math.max(m, l.zIndex), 0);
+      return prev.map(l => l.id === itemId ? { ...l, zIndex: maxZ + 1 } : l);
+    });
+  }, []);
+
+  const handleCommitLayer = useCallback((layerId: string, next: { x: number; y: number; scale: number; rotation: number }) => {
+    setTextLayers(prev => prev.map(l => l.id === layerId ? { ...l, ...next } : l));
+    setPhotoLayers(prev => prev.map(l => l.id === layerId ? { ...l, ...next } : l));
+  }, []);
+
+  const handleAddText = useCallback(() => {
+    const maxZ = [
+      ...layout.map(l => l.zIndex),
+      ...textLayers.map(l => l.zIndex),
+      ...photoLayers.map(l => l.zIndex),
+    ].reduce((m, z) => Math.max(m, z), 0);
+    const newLayer: TextLayerItem = {
+      id: `text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      text: 'Tap to edit',
+      fontSize: 96,
+      color: '#1A1210',
+      fontFamily: 'serif',
+      x: 540,
+      y: 540,
+      scale: 1.0,
+      rotation: 0,
+      zIndex: maxZ + 1,
+    };
+    setTextLayers(prev => {
+      const total = layout.length + prev.length + photoLayers.length;
+      if (total >= 12) return prev;
+      return [...prev, newLayer];
+    });
+    setSelectedItemId(newLayer.id);
+    setTextLayerDraft(newLayer.text);
+    setTextFontDraft(newLayer.fontFamily);
+    setTextSizeDraft(newLayer.fontSize);
+    setTextColorDraft(newLayer.color);
+    setEditingTextLayerId(newLayer.id);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }, [layout, textLayers, photoLayers]);
+
+  const handleAddPhoto = useCallback(async () => {
+    if (!creatorId) return;
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (perm.status !== 'granted') {
+        Alert.alert('Permission needed', 'We need access to your photo library.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.9,
+      });
+      if (res.canceled || !res.assets[0]?.uri) return;
+      const asset = res.assets[0];
+      const ext = asset.uri.split('.').pop()?.toLowerCase() ?? 'jpg';
+      const random = Math.random().toString(36).slice(2, 8);
+      const path = `${creatorId}/collage-photo-${Date.now()}-${random}.${ext}`;
+      const cloudUrl = await uploadPhoto(asset.uri, 'look-photos', path);
+      const maxZ = [
+        ...layout.map(l => l.zIndex),
+        ...textLayers.map(l => l.zIndex),
+        ...photoLayers.map(l => l.zIndex),
+      ].reduce((m, z) => Math.max(m, z), 0);
+      const newLayer: PhotoLayerItem = {
+        id: `photo-${Date.now()}-${random}`,
+        url: cloudUrl,
+        x: 540,
+        y: 540,
+        scale: 1.0,
+        rotation: 0,
+        zIndex: maxZ + 1,
+      };
+      setPhotoLayers(prev => {
+        const total = layout.length + textLayers.length + prev.length;
+        if (total >= 12) return prev;
+        return [...prev, newLayer];
+      });
+      setSelectedItemId(newLayer.id);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    } catch (e) {
+      console.warn('[collage-builder] add photo failed', e);
+      Alert.alert('Failed', 'Could not add photo. Please try again.');
+    }
+  }, [creatorId, layout, textLayers, photoLayers]);
+
+  // Try on a Model — all apparel items currently on the canvas. The sheet
+  // picks a primary (highest category priority) and lets the creator add up
+  // to 4 more. Hide the CTA when no apparel is in the look.
+  const apparelItems = useMemo<ClothingItem[]>(() => {
+    const pool = processedItems.length > 0 ? processedItems : selectedItems;
+    return pool.filter(isApparelItem) as ClothingItem[];
+  }, [processedItems, selectedItems]);
+  const hasApparel = apparelItems.length > 0;
+
+  const handleVirtualModelGenerated = useCallback(
+    (url: string, opts: { cached: boolean; aspectRatio?: number }) => {
+      const maxZ = [
+        ...layout.map((l) => l.zIndex),
+        ...textLayers.map((l) => l.zIndex),
+        ...photoLayers.map((l) => l.zIndex),
+      ].reduce((m, z) => Math.max(m, z), 0);
+      const random = Math.random().toString(36).slice(2, 8);
+      // PORTRAIT_HD_3_2 default is 0.667 (taller than wide); we persist the ratio
+      // on the layer so the canvas can size the bounding box correctly and avoid
+      // clipping the face when the photo lands in a 600×600 layer slot.
+      const aspectRatio = opts.aspectRatio ?? 0.667;
+      const newLayer: PhotoLayerItem = {
+        id: `vmodel-${Date.now()}-${random}`,
+        url,
+        x: 540,
+        y: 540,
+        scale: 1.0,
+        rotation: 0,
+        zIndex: maxZ + 1,
+        aspectRatio,
+      };
+      setPhotoLayers((prev) => {
+        const total = layout.length + textLayers.length + prev.length;
+        if (total >= 12) return prev;
+        return [...prev, newLayer];
+      });
+      setSelectedItemId(newLayer.id);
+      setTryOnToast(opts.cached ? 'Added (reused cached look)' : 'Added — looks great!');
+      setTimeout(() => setTryOnToast(null), 1800);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    },
+    [layout, textLayers, photoLayers],
+  );
+
+  // Backdrop library — server provides the canonical category list & assets.
+  const { data: allBackdrops = [] } = useCollageBackdrops();
+
+  // First-look mode: auto-apply a magazine-ish backdrop once on first
+  // render of the preview step. We try 'magazine' first (in case the
+  // server library is extended), then fall back to 'studio' and finally
+  // any backdrop. Silently no-ops if the library is empty.
+  const firstLookBackdropAppliedRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (!isFirstLook) return;
+    if (firstLookBackdropAppliedRef.current) return;
+    if (step !== 'preview') return;
+    if (allBackdrops.length === 0) return;
+    if (backdropId) return;
+    const preferred = allBackdrops.filter((b) => b.category === 'magazine');
+    const fallback = preferred.length > 0
+      ? preferred
+      : allBackdrops.filter((b) => b.category === 'studio');
+    const pool = fallback.length > 0 ? fallback : allBackdrops;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    if (!pick) return;
+    setBackgroundImage(pick.imageUrl);
+    setBackdropId(pick.id);
+    firstLookBackdropAppliedRef.current = true;
+  }, [isFirstLook, step, allBackdrops, backdropId]);
+
+  // Ordered list of categories that actually have items in the library, in
+  // the server's canonical sort (color → gradient → texture → pattern → studio
+  // → lifestyle → outdoor). Built once per data change so the chip row stays
+  // stable as the user scrolls.
+  const backdropCategories = useMemo<string[]>(() => {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const b of allBackdrops) {
+      if (!seen.has(b.category)) {
+        seen.add(b.category);
+        ordered.push(b.category);
+      }
+    }
+    return ordered;
+  }, [allBackdrops]);
+
+  // Backdrops visible in the thumbnail strip for the currently selected
+  // category. 'all' shows everything (canonical sort), 'solid' shows nothing
+  // (the 6-swatch grid renders in its place).
+  const visibleBackdrops = useMemo<CollageBackdrop[]>(() => {
+    if (selectedBackdropCategory === 'solid') return [];
+    if (selectedBackdropCategory === 'all') return allBackdrops;
+    return allBackdrops.filter((b) => b.category === selectedBackdropCategory);
+  }, [allBackdrops, selectedBackdropCategory]);
+
+  // Pre-fetch the first 3 thumbnails/full images so taps feel instant.
+  useEffect(() => {
+    if (visibleBackdrops.length === 0) return;
+    prefetchBackdrops(visibleBackdrops, 3);
+  }, [visibleBackdrops]);
+
+  const handlePickBackdrop = useCallback((b: CollageBackdrop) => {
+    setBackgroundImage(b.imageUrl);
+    setBackdropId(b.id);
+    setBackground(null);
+    Haptics.selectionAsync().catch(() => {});
+  }, []);
+
+  const handlePickSolidColor = useCallback((hex: string) => {
+    setBackground(hex);
+    setBackgroundImage(null);
+    setBackdropId(null);
+    Haptics.selectionAsync().catch(() => {});
+  }, []);
+
+  const handleClearBackdrop = useCallback(() => {
+    setBackgroundImage(null);
+    setBackdropId(null);
+    setBackground(null);
+  }, []);
+
+  const handleTextLayerSave = useCallback(() => {
+    if (!editingTextLayerId) return;
+    setTextLayers(prev => prev.map(l =>
+      l.id === editingTextLayerId
+        ? {
+            ...l,
+            text: textLayerDraft || 'Tap to edit',
+            fontFamily: textFontDraft,
+            fontSize: textSizeDraft,
+            color: textColorDraft,
+          }
+        : l
+    ));
+    setEditingTextLayerId(null);
+    setTextLayerDraft('');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }, [editingTextLayerId, textLayerDraft, textFontDraft, textSizeDraft, textColorDraft]);
+
+  const handleTextLayerCancel = useCallback(() => {
+    setEditingTextLayerId(null);
+    setTextLayerDraft('');
+  }, []);
+
+  const handleDeleteSelectedLayer = useCallback(() => {
+    if (!selectedItemId) return;
+    setTextLayers(prev => prev.filter(l => l.id !== selectedItemId));
+    setPhotoLayers(prev => prev.filter(l => l.id !== selectedItemId));
+    setSelectedItemId(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }, [selectedItemId]);
+
+  const handleResetLayout = useCallback(() => {
+    const items = processedItems.length > 0 ? processedItems : selectedItems;
+    setLayout(defaultLayoutFor(getTemplate(chosenTemplateId), items));
+    setSelectedItemId(null);
+    setSelectedLayoutId(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }, [chosenTemplateId, processedItems, selectedItems]);
+
+  const handleApplyLayout = useCallback(
+    (layoutTemplate: LayoutTemplate) => {
+      const items = processedItems.length > 0 ? processedItems : selectedItems;
+      const results = applyLayoutToCutouts(layoutTemplate, items.map(i => i.id));
+      // Merge scale/x/y/rotation from layout while preserving photo+text layers.
+      setLayout(prev =>
+        results.map(r => {
+          const existing = prev.find(p => p.itemId === r.itemId);
+          return existing ? { ...existing, ...r } : r;
+        }),
+      );
+      setSelectedLayoutId(layoutTemplate.id);
+      setSelectedItemId(null);
+    },
+    [processedItems, selectedItems],
+  );
+
+  const handleShuffleLayouts = useCallback(() => {
+    setLayoutSeed(s => s + 1);
+    setSelectedLayoutId(null);
+  }, []);
+
+  const handlePickLookCover = useCallback(async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (perm.status !== 'granted') {
+        Alert.alert('Permission needed', 'We need access to your photo library to pick a cover photo.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [2, 3],
+        quality: 0.85,
+      });
+      if (!res.canceled && res.assets[0]?.uri) {
+        const stableUri = await persistPickedPhoto(res.assets[0].uri);
+        setCoverPhotoUri(stableUri);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[collage-builder] cover pick failed', e);
+    }
+  }, []);
+
+  const handleEditDecoration = useCallback((idx: number) => {
+    const template = getTemplate(chosenTemplateId);
+    const deco = template.decorations?.[idx];
+    if (!deco || deco.type !== 'text') return;
+    const current = textOverrides[String(idx)] ?? deco.text ?? '';
+    setDecorationDraft(current);
+    setEditingDecorationIdx(idx);
+  }, [chosenTemplateId, textOverrides]);
+
+  const handleDecorationCancel = useCallback(() => {
+    setEditingDecorationIdx(null);
+    setDecorationDraft('');
+  }, []);
+
+  const handleDecorationSave = useCallback(() => {
+    if (editingDecorationIdx == null) return;
+    const key = String(editingDecorationIdx);
+    setTextOverrides(prev => ({ ...prev, [key]: decorationDraft }));
+    setEditingDecorationIdx(null);
+    setDecorationDraft('');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }, [editingDecorationIdx, decorationDraft]);
+
+  const renderCanvas = useCallback(
+    (templateId: CollageTemplateId, size?: number, ref?: React.Ref<View>, interactive: boolean = false) => {
+      const items = processedItems.length > 0
+        ? processedItems
+        : selectedItems.map(i => ({ ...i }) as CanvasItem);
+      const baseProps = {
+        items,
+        selfieUri,
+        size,
+        lookCoverPhotoUri: coverPhotoUri,
+        textOverrides,
+      };
+      const interactiveProps = interactive ? {
+        layout,
+        selectedItemId,
+        onSelectItem: handleSelectItem,
+        onCommitItem: handleCommitItem,
+        onPickLookCover: handlePickLookCover,
+        onEditDecoration: handleEditDecoration,
+        textLayers,
+        photoLayers,
+        background: background ?? undefined,
+        backgroundImage: backgroundImage ?? undefined,
+        onSelectLayer: handleSelectItem,
+        onCommitLayer: handleCommitLayer,
+      } : {};
+      const props = { ...baseProps, ...interactiveProps };
+      if (templateId === 'style-journal') {
+        return <StyleJournalCanvas ref={ref} {...props} />;
+      }
+      if (templateId === 'editorial') {
+        return <EditorialCanvas ref={ref} {...props} />;
+      }
+      if (templateId === 'editorial-cover') {
+        return <EditorialCoverCanvas ref={ref} {...props} />;
+      }
+      return <GridCanvas ref={ref} {...props} />;
+    },
+    [
+      processedItems,
+      selectedItems,
+      selfieUri,
+      layout,
+      selectedItemId,
+      handleSelectItem,
+      handleCommitItem,
+      coverPhotoUri,
+      textOverrides,
+      handlePickLookCover,
+      handleEditDecoration,
+      textLayers,
+      photoLayers,
+      background,
+      backgroundImage,
+      handleCommitLayer,
+    ]
+  );
+
+  // First-look mode back/cancel handler — saves the canvas as a draft in
+  // draftLookStore (a separate store from looks; persists across sessions
+  // via AsyncStorage) so the creator can come back and finish later. Shows
+  // a one-line confirmation toast/alert and bounces to the welcome surface.
+  const handleFirstLookBack = useCallback(() => {
+    try {
+      const draft = useDraftLookStore.getState();
+      const items = processedItems.length > 0 ? processedItems : selectedItems;
+      draft.setItems(items);
+      draft.setLookTitle(collageName);
+      draft.setSelectedLayout('clean-grid');
+      draft.setCaption('');
+    } catch (e) {
+      console.warn('[collage-builder] firstLook draft save failed', e);
+    }
+    Alert.alert(
+      'Saved as draft',
+      "Your first look is saved as a draft. Come back when you're ready 🖤",
+      [
+        {
+          text: 'OK',
+          onPress: () => {
+            router.replace('/(tabs)' as any);
+          },
+        },
+      ],
+    );
+  }, [processedItems, selectedItems, collageName]);
+
+  const handleSave = useCallback(async (mode: 'publish' | 'draft' = 'publish') => {
+    if (!canvasRef.current) {
+      Alert.alert('Unavailable', 'Canvas not ready, please try again.');
+      return;
+    }
+    if (!creatorId) {
+      Alert.alert('Sign in required', 'Please sign in as a creator to save your collage.');
+      return;
+    }
+    setIsSaving(true);
+    // Deselect first so the gold border isn't baked into the export.
+    setSelectedItemId(null);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      // Yield a frame so the deselect re-render commits before the snapshot.
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      const fileUri = await exportCollage(canvasRef.current);
+
+      const items = processedItems.length > 0 ? processedItems : selectedItems;
+
+      // If the lookCover photo is a local URI, upload it to cloud storage so
+      // it survives across devices/sessions. Cloud URLs (https://) pass
+      // through unchanged.
+      let persistedCoverUri = coverPhotoUri;
+      if (coverPhotoUri && !/^https?:\/\//i.test(coverPhotoUri)) {
+        try {
+          const path = `${creatorId}/cover-${Date.now()}.jpg`;
+          persistedCoverUri = await uploadPhoto(coverPhotoUri, 'look-photos', path);
+        } catch (uploadErr) {
+          console.warn('[collage-builder] lookCover upload failed, keeping local uri', uploadErr);
+        }
+      }
+
+      const collageLayout = {
+        template: chosenTemplateId,
+        background: background ?? undefined,
+        backgroundImage: backgroundImage ?? undefined,
+        backdropId: backdropId ?? undefined,
+        items: layout,
+        photos: photoLayers.length > 0 ? photoLayers : undefined,
+        text: textLayers.length > 0 ? textLayers : undefined,
+        textOverrides: Object.keys(textOverrides).length > 0 ? textOverrides : undefined,
+        lookCoverPhotoUri: persistedCoverUri,
+      };
+
+      console.log('[collage-builder.handleSave]', {
+        mode,
+        editingLookId: editingLook?.id ?? null,
+        hasCollageLayout: !!collageLayout,
+        template: collageLayout.template,
+        layoutItemCount: Array.isArray(collageLayout.items) ? collageLayout.items.length : 0,
+        hasLookCover: !!collageLayout.lookCoverPhotoUri,
+      });
+
+      let resolvedLookId: string | null = null;
+      if (editingLook) {
+        // Resolve publishedAt based on previous draft/published state + mode.
+        // - Already published: leave as-is regardless of mode.
+        // - Was a draft: 'draft' keeps null, 'publish' stamps now().
+        let nextPublishedAt: string | null | undefined;
+        if (editingLook.publishedAt === null) {
+          nextPublishedAt = mode === 'draft' ? null : new Date().toISOString();
+        } else {
+          nextPublishedAt = editingLook.publishedAt;
+        }
+        // Update existing look — preserve caption/hashtags. Title comes
+        // from the inline name field on the preview step (defaults to
+        // editingLook.title, which we hydrated into collageName on mount).
+        await updateLook({
+          ...editingLook,
+          title: (collageName.trim() || editingLook.title || 'My Collage'),
+          photoUri: fileUri,
+          items,
+          collageLayout,
+          publishedAt: nextPublishedAt,
+        });
+        setSavedLookId(editingLook.id);
+        setSavedLookCoverUri(fileUri);
+        setSavedLookShortCode(editingLook.shortCode ?? null);
+        resolvedLookId = editingLook.id;
+      } else {
+        // Reuse the existing addLook flow. addLook handles upload+insert and
+        // returns the persisted Look. We tag this look with a 'collage' tag so
+        // it can be filtered later, and use 'clean-grid' as the layout fallback
+        // since the Look layout enum doesn't yet include 'collage'.
+        const created = await addLook({
+          title: collageName.trim() || 'My Collage',
+          photoUri: fileUri,
+          items,
+          layout: 'clean-grid',
+          caption: '',
+          hashtags: [],
+          creatorId,
+          tags: ['collage'],
+          archived: false,
+          collageLayout,
+        }, { asDraft: mode === 'draft' });
+
+        if (!created) {
+          throw new Error('Could not save collage.');
+        }
+        setSavedLookId(created.id);
+        setSavedLookCoverUri(created.photoUri);
+        setSavedLookShortCode(created.shortCode ?? null);
+        resolvedLookId = created.id;
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Drafts skip the share step — bounce back to the creator profile/closet
+      // with a quick toast (matches create.tsx draft flow).
+      if (mode === 'draft') {
+        Alert.alert('Saved as draft', "We've kept this collage in your Drafts.", [
+          {
+            text: 'OK',
+            onPress: () => {
+              if (isFirstLook) {
+                // Golden flow: a first-look draft must NOT bounce back to the
+                // onboarding picker. Go home — the draft is saved and counts as
+                // a look, so onboarding won't re-trigger.
+                router.replace('/(tabs)' as any);
+              } else if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/creator-account' as any);
+              }
+            },
+          },
+        ]);
+        return;
+      }
+      // First-look mode: hand off to the celebration screen instead of the
+      // normal "done/share" step. Celebration auto-dismisses after 4s.
+      if (isFirstLook) {
+        router.replace({
+          pathname: '/onboarding/celebration',
+          params: { lookId: resolvedLookId ?? '' },
+        } as any);
+        return;
+      }
+      setStep('done');
+    } catch (e: any) {
+      console.error('[collage-builder] save failed', e);
+      Alert.alert('Save failed', e?.message ?? 'Could not save your collage. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
+  }, [addLook, updateLook, editingLook, creatorId, processedItems, selectedItems, layout, chosenTemplateId, coverPhotoUri, textOverrides, textLayers, photoLayers, background, backgroundImage, backdropId, collageName, isFirstLook]);
+
+  const handleShareToStory = useCallback(async () => {
+    const shareUrl = buildLookShareUrl(savedLookId);
+    if (!shareUrl) return;
+
+    try {
+      await Clipboard.setStringAsync(shareUrl);
+    } catch (e) {
+      console.warn('[collage-builder] clipboard copy failed', e);
+    }
+
+    try {
+      if (savedLookCoverUri) {
+        await savePhotosToAlbum({
+          coverPhotoUri: savedLookCoverUri,
+          items: [],
+        });
+      }
+    } catch (e) {
+      console.warn('[collage-builder] photo save failed', e);
+    }
+
+    Linking.openURL('instagram://app').catch(() => {});
+
+    setTimeout(() => {
+      Alert.alert(
+        'Saved + link copied',
+        'Open Instagram → tap + → Story → pick your collage from Photos → add a Link Sticker and paste the URL from your clipboard.',
+      );
+    }, 600);
+  }, [savedLookId, savedLookCoverUri]);
+
+  const handleShareTikTok = useCallback(async () => {
+    if (!savedLookCoverUri || !savedLookId) {
+      Alert.alert('Add a cover photo first', 'TikTok needs a cover image to share.');
+      return;
+    }
+    try {
+      const outcome = await shareToTikTok({
+        id: savedLookId,
+        title: 'My Collage',
+        photoUri: savedLookCoverUri,
+        caption: 'Check out my latest collage!',
+        shortCode: savedLookShortCode,
+        hashtags: ['StyledInMotion', 'OOTD'],
+      });
+      if (outcome.stage === 'sdk-unavailable') {
+        Linking.openURL('tiktok://').catch(() => {});
+        Alert.alert(
+          'Caption copied!',
+          'Open TikTok, create a new post, and paste the caption.',
+          [{ text: 'Got it' }]
+        );
+      } else if (outcome.stage === 'missing-photo') {
+        Alert.alert('Add a cover photo first', 'TikTok needs a cover image to share.');
+      } else if (outcome.stage === 'error') {
+        Alert.alert('TikTok share failed', outcome.message || 'Please try again.');
+      }
+    } catch (e) {
+      console.warn('[collage-builder] tiktok share failed', e);
+    }
+  }, [savedLookCoverUri, savedLookId, savedLookShortCode]);
+
+  const handleBackToCloset = useCallback(() => {
+    router.replace('/creator-account' as any);
+  }, []);
+
+  // Explicit header-back handler. The native stack back button on this screen
+  // was unreliable, so we render our own wired chevron (headerLeft below) that
+  // always exits: pop if we can, otherwise fall back to the Drafts list.
+  const handleHeaderBack = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/drafts' as any);
+    }
+  }, []);
+
+  // Feature flag gate
+  if (!FEATURE_FLAG) {
+    return (
+      <SafeAreaView style={styles.flagFallback} edges={['top', 'bottom']}>
+        <Stack.Screen options={{ headerTitle: 'New Collage' }} />
+        <Pressable style={styles.flagBack} onPress={() => router.back()}>
+          <ArrowLeft size={20} color="#1A1210" />
+          <Text style={styles.flagBackText}>Back</Text>
+        </Pressable>
+        <View style={styles.flagBody}>
+          <Text style={styles.flagTitle}>Coming soon</Text>
+          <Text style={styles.flagSub}>
+            The Outfit Collage builder is not yet available in this build.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!fontsLoaded) {
+    return (
+      <View style={styles.fontLoading}>
+        <ActivityIndicator color="#1A1210" />
+      </View>
+    );
+  }
+
+  return (
+    <GestureHandlerRootView style={styles.root} testID="collage-builder-screen">
+      <Stack.Screen
+        options={{
+          headerTitle: editingLookId ? 'Edit Collage' : 'New Collage',
+          headerLeft: () => (
+            <Pressable
+              onPress={handleHeaderBack}
+              hitSlop={12}
+              style={{ paddingVertical: 6, paddingRight: 12 }}
+              testID="collage-header-back"
+            >
+              <ArrowLeft size={24} color="#1A1210" />
+            </Pressable>
+          ),
+        }}
+      />
+
+      {step === 'pick' ? (
+        // While an edit look opened by id is still resolving (e.g. a seeded
+        // draft being fetched), show a spinner rather than a blank 0/12 picker.
+        // Once it resolves, the hydrate effect jumps straight to 'preview'.
+        editingLookId && !editingLook ? (
+          <View style={styles.processingWrap} testID="collage-resolving-look">
+            <ActivityIndicator size="large" color="#1A1210" />
+            <Text style={styles.h2}>Opening your collage…</Text>
+          </View>
+        ) : (
+          <CollageItemPicker
+            onConfirm={handlePickConfirm}
+            initialSelectedIds={selectedItems.map(i => i.id)}
+          />
+        )
+      ) : null}
+
+      {step === 'selfie' ? (
+        <SafeAreaView style={styles.flex} edges={['bottom']}>
+          <ScrollView contentContainerStyle={styles.selfiePad} testID="collage-selfie-step">
+            <Text style={styles.h1}>Add a selfie?</Text>
+            <Text style={styles.body}>
+              Optional — we'll add it as a circular accent on your collage.
+            </Text>
+            <View style={styles.selfiePreviewWrap}>
+              {selfieUri ? (
+                <View style={styles.selfiePreview}>
+                  <Image
+                    source={{ uri: selfieUri }}
+                    style={styles.selfieImage}
+                    contentFit="cover"
+                  />
+                  <Pressable
+                    style={styles.selfieRemove}
+                    onPress={() => setSelfieUri(null)}
+                    testID="collage-selfie-remove"
+                    hitSlop={10}
+                  >
+                    <X size={18} color="#FFFFFF" strokeWidth={2.5} />
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable
+                  style={styles.selfiePlaceholder}
+                  onPress={handleAddSelfie}
+                  testID="collage-selfie-pick"
+                >
+                  <ImageIcon size={32} color="#8C8580" />
+                  <Text style={styles.selfiePlaceholderText}>Tap to add selfie</Text>
+                </Pressable>
+              )}
+            </View>
+            <View style={{ gap: 8, marginTop: 24 }}>
+              <Pressable
+                className="bg-[#B87063] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85"
+                style={{ shadowColor: '#1A1210', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, minWidth: 240 }}
+                onPress={handleSelfieContinue}
+                testID="collage-selfie-continue"
+              >
+                <Text
+                  className="ml-2 text-white text-[15px] font-semibold"
+                  style={{ fontFamily: 'DMSans_500Medium' }}
+                >
+                  {selfieUri ? 'Continue with selfie →' : 'Skip & continue →'}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={styles.tertiaryButton}
+                onPress={() => setStep('pick')}
+                testID="collage-selfie-back"
+              >
+                <Text style={styles.tertiaryButtonText}>Back</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      ) : null}
+
+      {step === 'processing' ? (
+        <View style={styles.processingWrap} testID="collage-processing-step">
+          <ActivityIndicator size="large" color="#1A1210" />
+          <Text style={styles.h2}>Cleaning up your photos…</Text>
+          <Text style={styles.bodyDim}>Removing backgrounds with AI</Text>
+        </View>
+      ) : null}
+
+      {step === 'preview' ? (
+        <SafeAreaView style={styles.flex} edges={['bottom']}>
+          <ScrollView contentContainerStyle={styles.previewPad} testID="collage-preview-step">
+            <Text style={styles.h1}>Looks good?</Text>
+            <Text style={styles.body}>
+              Drag to move, pinch to resize, tap to bring forward.
+            </Text>
+            {(processedItems.length > 0 ? processedItems : selectedItems).length <= 6 ? (
+              <LayoutCarousel
+                itemCount={(processedItems.length > 0 ? processedItems : selectedItems).length}
+                selectedLayoutId={selectedLayoutId}
+                layoutSeed={layoutSeed}
+                onSelectLayout={handleApplyLayout}
+                onShuffle={handleShuffleLayouts}
+              />
+            ) : null}
+            {/* Backdrop picker — two rows: category chips, then thumbnails
+             *  (or 6-swatch solid grid when the "Solid Color" chip is on). */}
+            <View style={{ marginBottom: 8 }}>
+              <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 12, color: '#6B5E58', marginBottom: 6, paddingHorizontal: 4 }}>
+                Backdrop
+              </Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ paddingHorizontal: 4, gap: 6 }}
+                style={{ flexGrow: 0, marginBottom: 8 }}
+                testID="collage-backdrop-categories"
+              >
+                {(['all', 'solid', ...backdropCategories] as const).map((cat) => {
+                  const active = selectedBackdropCategory === cat;
+                  const label = cat === 'all' ? 'All' : cat === 'solid' ? 'Solid Color' : backdropCategoryLabel(cat);
+                  return (
+                    <Pressable
+                      key={cat}
+                      onPress={() => setSelectedBackdropCategory(cat)}
+                      style={{
+                        paddingHorizontal: 12,
+                        paddingVertical: 6,
+                        borderRadius: 999,
+                        backgroundColor: active ? '#1A1210' : '#FFFFFF',
+                        borderWidth: 1,
+                        borderColor: active ? '#1A1210' : '#C7BDB4',
+                      }}
+                      testID={`collage-backdrop-cat-${cat}`}
+                    >
+                      <Text
+                        style={{
+                          fontFamily: 'DMSans_500Medium',
+                          fontSize: 12,
+                          color: active ? '#FFFFFF' : '#1A1210',
+                        }}
+                      >
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              {selectedBackdropCategory === 'solid' ? (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ paddingHorizontal: 4, gap: 10, alignItems: 'center' }}
+                  style={{ flexGrow: 0 }}
+                  testID="collage-backdrop-solid-row"
+                >
+                  {/* Clear swatch — restore template default. */}
+                  <Pressable
+                    onPress={handleClearBackdrop}
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
+                      backgroundColor: '#FFFFFF',
+                      borderWidth: 1,
+                      borderColor: '#C7BDB4',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    testID="collage-backdrop-clear"
+                  >
+                    <Text style={{ fontSize: 18, color: '#6B5E58' }}>×</Text>
+                  </Pressable>
+                  {SOLID_BG_COLORS.map((hex) => {
+                    const active = background === hex && !backgroundImage;
+                    return (
+                      <Pressable
+                        key={hex}
+                        onPress={() => handlePickSolidColor(hex)}
+                        style={{
+                          width: 44,
+                          height: 44,
+                          borderRadius: 22,
+                          backgroundColor: hex,
+                          borderWidth: active ? 2 : 1,
+                          borderColor: active ? '#B89968' : '#C7BDB4',
+                        }}
+                        testID={`collage-backdrop-solid-${hex.replace('#', '')}`}
+                      />
+                    );
+                  })}
+                  <Pressable
+                    onPress={() => { setBgCustomDraft(background ?? '#'); setShowBgPicker(true); }}
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
+                      backgroundColor: background && !SOLID_BG_COLORS.includes(background) && !backgroundImage ? background : '#FFFFFF',
+                      borderWidth: 1,
+                      borderColor: '#C7BDB4',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    testID="collage-backdrop-custom"
+                  >
+                    <Text style={{ fontSize: 16, color: '#6B5E58' }}>+</Text>
+                  </Pressable>
+                </ScrollView>
+              ) : (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ paddingHorizontal: 4, gap: 8, alignItems: 'center' }}
+                  style={{ flexGrow: 0 }}
+                  testID="collage-backdrop-strip"
+                >
+                  {/* Clear chip — drop any selected backdrop. */}
+                  <Pressable
+                    onPress={handleClearBackdrop}
+                    style={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: 10,
+                      backgroundColor: '#FFFFFF',
+                      borderWidth: 1,
+                      borderColor: '#C7BDB4',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    testID="collage-backdrop-clear"
+                  >
+                    <Text style={{ fontSize: 18, color: '#6B5E58' }}>×</Text>
+                  </Pressable>
+                  {visibleBackdrops.map((b) => {
+                    const active = backdropId === b.id;
+                    return (
+                      <Pressable
+                        key={b.id}
+                        onPress={() => handlePickBackdrop(b)}
+                        style={{
+                          width: 48,
+                          height: 48,
+                          borderRadius: 10,
+                          overflow: 'hidden',
+                          borderWidth: active ? 2 : 1,
+                          borderColor: active ? '#B89968' : '#C7BDB4',
+                        }}
+                        testID={`collage-backdrop-${b.id}`}
+                      >
+                        <Image
+                          source={{ uri: b.thumbnailUrl }}
+                          style={{ width: '100%', height: '100%' }}
+                          contentFit="cover"
+                        />
+                      </Pressable>
+                    );
+                  })}
+                  {visibleBackdrops.length === 0 ? (
+                    <Text style={{ fontFamily: 'DMSans_400Regular', fontSize: 12, color: '#A39A91', paddingHorizontal: 8 }}>
+                      Loading backdrops…
+                    </Text>
+                  ) : null}
+                </ScrollView>
+              )}
+            </View>
+            {/* Inline name field — saves a trip through Edit Look just to rename. */}
+            <View style={styles.collageNameWrap}>
+              <TextInput
+                style={styles.collageNameInput}
+                value={collageName}
+                onChangeText={setCollageName}
+                placeholder="My Collage"
+                placeholderTextColor="#A89990"
+                cursorColor="#2C2C2C"
+                selectionColor="rgba(44, 44, 44, 0.3)"
+                returnKeyType="done"
+                testID="collage-name-input"
+              />
+            </View>
+            <View style={styles.previewCanvasWrap}>
+              {renderCanvas(chosenTemplateId, PREVIEW_DISPLAY_SIZE, canvasRef, true)}
+            </View>
+            {/* Layer toolbar */}
+            <View style={{ flexDirection: 'row', gap: 8, marginVertical: 4, flexWrap: 'wrap' }}>
+              <Pressable
+                className="bg-white rounded-full py-2 px-4 flex-row items-center justify-center border-[1.5px] border-[#1A1210] active:opacity-85"
+                onPress={handleAddText}
+                testID="collage-add-text"
+              >
+                <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 13, color: '#1A1210' }}>Aa Text</Text>
+              </Pressable>
+              <Pressable
+                className="bg-white rounded-full py-2 px-4 flex-row items-center justify-center border-[1.5px] border-[#1A1210] active:opacity-85"
+                onPress={handleAddPhoto}
+                testID="collage-add-photo"
+              >
+                <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 13, color: '#1A1210' }}>+ Photo</Text>
+              </Pressable>
+              {hasApparel ? (
+                <Pressable
+                  className="bg-[#1A1210] rounded-full py-2 px-4 flex-row items-center justify-center active:opacity-85"
+                  onPress={() => setShowTryOnSheet(true)}
+                  testID="collage-try-on-model"
+                >
+                  <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 13, color: '#FFFFFF' }}>
+                    ✨ Try on a Model
+                  </Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                className="bg-white rounded-full py-2 px-4 flex-row items-center justify-center border-[1.5px] border-[#B87063] active:opacity-85"
+                onPress={() => setShowItemPicker(true)}
+                testID="collage-edit-items"
+              >
+                <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 13, color: '#B87063' }}>Edit Items</Text>
+              </Pressable>
+              {selectedItemId !== null && (textLayers.some(l => l.id === selectedItemId) || photoLayers.some(l => l.id === selectedItemId)) ? (
+                <>
+                  {textLayers.some(l => l.id === selectedItemId) ? (
+                    <Pressable
+                      className="bg-white rounded-full py-2 px-4 flex-row items-center justify-center border-[1.5px] border-[#1A1210] active:opacity-85"
+                      onPress={() => {
+                        const layer = textLayers.find(l => l.id === selectedItemId);
+                        if (layer) {
+                          setTextLayerDraft(layer.text);
+                          setTextFontDraft(layer.fontFamily ?? 'serif');
+                          setTextSizeDraft(layer.fontSize ?? 96);
+                          setTextColorDraft(layer.color ?? '#1A1210');
+                          setEditingTextLayerId(layer.id);
+                        }
+                      }}
+                      testID="collage-edit-text-layer"
+                    >
+                      <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 13, color: '#1A1210' }}>Edit text</Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    className="bg-white rounded-full py-2 px-4 flex-row items-center justify-center border-[1.5px] border-[#C7302B] active:opacity-85"
+                    onPress={handleDeleteSelectedLayer}
+                    testID="collage-delete-layer"
+                  >
+                    <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 13, color: '#C7302B' }}>Delete</Text>
+                  </Pressable>
+                </>
+              ) : null}
+            </View>
+            <Pressable
+              style={styles.resetButton}
+              onPress={handleResetLayout}
+              disabled={isSaving}
+              testID="collage-reset-layout"
+            >
+              <Text style={styles.resetButtonText}>Reset layout</Text>
+            </Pressable>
+            {editingLook && editingLook.publishedAt ? (
+              <Pressable
+                className="bg-[#B87063] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85"
+                style={{ shadowColor: '#1A1210', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, opacity: isSaving ? 0.6 : 1, minWidth: 240 }}
+                onPress={() => handleSave('publish')}
+                disabled={isSaving}
+                testID="collage-save-share"
+              >
+                {isSaving ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text
+                    className="ml-2 text-white text-[15px] font-semibold"
+                    style={{ fontFamily: 'DMSans_500Medium' }}
+                  >
+                    Save Changes →
+                  </Text>
+                )}
+              </Pressable>
+            ) : (
+              <View className="gap-3" style={{ minWidth: 240 }}>
+                <Pressable
+                  className="bg-white rounded-full py-3.5 px-5 flex-row items-center justify-center border-[1.5px] border-[#1A1210] active:opacity-85"
+                  style={{ opacity: isSaving ? 0.6 : 1 }}
+                  onPress={() => handleSave('draft')}
+                  disabled={isSaving}
+                  testID="collage-save-draft"
+                >
+                  <Text
+                    className="ml-2 text-[#1A1210] text-[15px] font-semibold"
+                    style={{ fontFamily: 'DMSans_500Medium' }}
+                  >
+                    {isSaving ? 'Saving…' : 'Save Draft'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  className="bg-[#B87063] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85"
+                  style={{ shadowColor: '#1A1210', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, opacity: isSaving ? 0.6 : 1 }}
+                  onPress={() => handleSave('publish')}
+                  disabled={isSaving}
+                  testID="collage-save-share"
+                >
+                  {isSaving ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text
+                      className="ml-2 text-white text-[15px] font-semibold"
+                      style={{ fontFamily: 'DMSans_500Medium' }}
+                    >
+                      {isFirstLook
+                        ? 'Publish my first look'
+                        : editingLook
+                          ? 'Publish →'
+                          : 'Save & Share →'}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+            )}
+            {!editingLook ? (
+              <Pressable
+                style={styles.tertiaryButton}
+                onPress={() => {
+                  if (isFirstLook) {
+                    handleFirstLookBack();
+                  } else {
+                    setStep('selfie');
+                  }
+                }}
+                testID="collage-preview-back"
+                disabled={isSaving}
+              >
+                <Text style={styles.tertiaryButtonText}>{isFirstLook ? 'Save as draft' : 'Back'}</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                style={styles.tertiaryButton}
+                onPress={() => router.back()}
+                testID="collage-preview-cancel"
+                disabled={isSaving}
+              >
+                <Text style={styles.tertiaryButtonText}>Cancel</Text>
+              </Pressable>
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      ) : null}
+
+      {editingDecorationIdx != null ? (() => {
+        const template = getTemplate(chosenTemplateId);
+        const deco = template.decorations?.[editingDecorationIdx];
+        if (!deco || deco.type !== 'text') return null;
+        return (
+          <Modal
+            visible
+            transparent
+            animationType="fade"
+            onRequestClose={handleDecorationCancel}
+          >
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={styles.modalBackdrop}
+            >
+              <Pressable style={StyleSheet.absoluteFill} onPress={handleDecorationCancel} />
+              <View style={styles.modalCard} testID="collage-decoration-modal">
+                <Text style={styles.modalLabel}>Edit headline</Text>
+                <TextInput
+                  value={decorationDraft}
+                  onChangeText={setDecorationDraft}
+                  multiline={!!deco.multiline}
+                  placeholder={deco.placeholder ?? 'Type something'}
+                  placeholderTextColor="#A39A91"
+                  autoFocus
+                  style={[
+                    styles.modalInput,
+                    {
+                      fontFamily: deco.fontFamily ?? 'CormorantGaramond_600SemiBold',
+                      fontStyle: 'italic',
+                      minHeight: deco.multiline ? 120 : undefined,
+                      textAlignVertical: deco.multiline ? 'top' : 'center',
+                    },
+                  ]}
+                  testID="collage-decoration-input"
+                />
+                <View style={styles.modalActions}>
+                  <Pressable
+                    style={styles.tertiaryButton}
+                    onPress={handleDecorationCancel}
+                    testID="collage-decoration-cancel"
+                  >
+                    <Text style={styles.tertiaryButtonText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    className="bg-[#B87063] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85"
+                    style={{ shadowColor: '#1A1210', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, minWidth: 120 }}
+                    onPress={handleDecorationSave}
+                    testID="collage-decoration-save"
+                  >
+                    <Text
+                      className="ml-2 text-white text-[15px] font-semibold"
+                      style={{ fontFamily: 'DMSans_500Medium' }}
+                    >
+                      Save
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            </KeyboardAvoidingView>
+          </Modal>
+        );
+      })() : null}
+
+      {/* Text layer inline editor modal */}
+      {editingTextLayerId != null ? (
+        <Modal visible transparent animationType="fade">
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}>
+              <View style={{ backgroundColor: '#FBF7F4', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 40 }}>
+                <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 16, color: '#1A1210', marginBottom: 12 }}>Edit text</Text>
+                <TextInput
+                  value={textLayerDraft}
+                  onChangeText={setTextLayerDraft}
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    borderWidth: 1.5,
+                    borderColor: '#E0D8D0',
+                    borderRadius: 10,
+                    padding: 12,
+                    fontSize: 16,
+                    fontFamily: 'DMSans_400Regular',
+                    color: '#1A1210',
+                    minHeight: 80,
+                    marginBottom: 16,
+                  }}
+                  multiline
+                  autoFocus
+                  testID="collage-text-layer-input"
+                />
+
+                {/* Live preview swatch */}
+                <View
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    borderRadius: 10,
+                    borderWidth: 1.5,
+                    borderColor: '#E0D8D0',
+                    paddingVertical: 18,
+                    paddingHorizontal: 16,
+                    minHeight: 72,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: 16,
+                  }}
+                  testID="collage-text-layer-preview"
+                >
+                  <Text
+                    numberOfLines={2}
+                    style={{
+                      fontFamily: TEXT_FONT_OPTIONS.find(o => o.token === textFontDraft)?.family
+                        ?? 'CormorantGaramond_600SemiBold',
+                      fontSize: Math.max(18, Math.min(textSizeDraft * 0.38, 44)),
+                      color: textColorDraft,
+                      textAlign: 'center',
+                    }}
+                  >
+                    {textLayerDraft || 'Tap to edit'}
+                  </Text>
+                </View>
+
+                {/* Font picker */}
+                <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 12, color: '#6B5E58', marginBottom: 6 }}>Font</Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
+                  {TEXT_FONT_OPTIONS.map((opt) => {
+                    const selected = textFontDraft === opt.token;
+                    return (
+                      <Pressable
+                        key={opt.token}
+                        onPress={() => setTextFontDraft(opt.token)}
+                        testID={`collage-text-font-${opt.token}`}
+                        style={{
+                          flex: 1,
+                          paddingVertical: 12,
+                          borderRadius: 10,
+                          borderWidth: 1.5,
+                          borderColor: selected ? '#B87063' : '#E0D8D0',
+                          backgroundColor: selected ? '#FBE9E3' : '#FFFFFF',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Text style={{ fontFamily: opt.family, fontSize: 22, color: '#1A1210' }}>Aa</Text>
+                        <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 10, color: '#6B5E58', marginTop: 2 }}>{opt.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                {/* Size stepper */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                  <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 12, color: '#6B5E58' }}>Size</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                    <Pressable
+                      onPress={() => setTextSizeDraft((s) => Math.max(24, s - 8))}
+                      testID="collage-text-size-minus"
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 18,
+                        borderWidth: 1.5,
+                        borderColor: '#1A1210',
+                        backgroundColor: '#FFFFFF',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 18, color: '#1A1210', lineHeight: 20 }}>−</Text>
+                    </Pressable>
+                    <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 14, color: '#1A1210', minWidth: 32, textAlign: 'center' }}>
+                      {textSizeDraft}
+                    </Text>
+                    <Pressable
+                      onPress={() => setTextSizeDraft((s) => Math.min(160, s + 8))}
+                      testID="collage-text-size-plus"
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 18,
+                        borderWidth: 1.5,
+                        borderColor: '#1A1210',
+                        backgroundColor: '#FFFFFF',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 18, color: '#1A1210', lineHeight: 20 }}>+</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                {/* Color row */}
+                <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 12, color: '#6B5E58', marginBottom: 6 }}>Color</Text>
+                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 20 }}>
+                  {TEXT_COLOR_OPTIONS.map((c) => {
+                    const selected = textColorDraft.toUpperCase() === c.toUpperCase();
+                    return (
+                      <Pressable
+                        key={c}
+                        onPress={() => setTextColorDraft(c)}
+                        testID={`collage-text-color-${c.replace('#', '')}`}
+                        style={{
+                          width: 34,
+                          height: 34,
+                          borderRadius: 17,
+                          backgroundColor: c,
+                          borderWidth: selected ? 2.5 : 1.5,
+                          borderColor: selected ? '#B87063' : '#D8CFC7',
+                        }}
+                      />
+                    );
+                  })}
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable
+                    className="bg-white rounded-full py-3.5 px-5 flex-row items-center justify-center border-[1.5px] border-[#1A1210] active:opacity-85"
+                    style={{ flex: 1 }}
+                    onPress={handleTextLayerCancel}
+                    testID="collage-text-layer-cancel"
+                  >
+                    <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 15, color: '#1A1210' }}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    className="bg-[#B87063] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85"
+                    style={{ flex: 1 }}
+                    onPress={handleTextLayerSave}
+                    testID="collage-text-layer-save"
+                  >
+                    <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 15, color: '#FFFFFF' }}>Done</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      ) : null}
+
+      {/* Item picker modal — accessible from the preview step to add/remove items */}
+      {showItemPicker ? (
+        <Modal
+          visible
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => setShowItemPicker(false)}
+        >
+          <SafeAreaView style={{ flex: 1, backgroundColor: '#FFFFFF' }} edges={['top', 'bottom']}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#E8E0D8' }}>
+              <Text style={{ flex: 1, fontFamily: 'DMSans_600SemiBold', fontSize: 16, color: '#1A1210' }}>Edit Items</Text>
+              <Pressable
+                onPress={() => setShowItemPicker(false)}
+                hitSlop={12}
+                testID="collage-item-picker-close"
+                className="flex-row items-center justify-center py-2 px-3 active:opacity-70"
+              >
+                <X size={22} color="#1A1210" />
+              </Pressable>
+            </View>
+            <CollageItemPicker
+              onConfirm={handleItemPickerConfirm}
+              initialSelectedIds={layout.map(l => l.itemId)}
+              requireCutout
+            />
+          </SafeAreaView>
+        </Modal>
+      ) : null}
+
+      {/* Custom background color picker modal */}
+      {showBgPicker ? (
+        <Modal visible transparent animationType="fade">
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}>
+              <View style={{ backgroundColor: '#FBF7F4', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 40 }}>
+                <Text style={{ fontFamily: 'DMSans_600SemiBold', fontSize: 16, color: '#1A1210', marginBottom: 8 }}>Custom background</Text>
+                <Text style={{ fontFamily: 'DMSans_400Regular', fontSize: 13, color: '#6B5E58', marginBottom: 12 }}>Enter a hex color code (e.g. #FF5733)</Text>
+                <TextInput
+                  value={bgCustomDraft}
+                  onChangeText={setBgCustomDraft}
+                  placeholder="#RRGGBB"
+                  autoCapitalize="characters"
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    borderWidth: 1.5,
+                    borderColor: '#E0D8D0',
+                    borderRadius: 10,
+                    padding: 12,
+                    fontSize: 16,
+                    fontFamily: 'DMSans_400Regular',
+                    color: '#1A1210',
+                    marginBottom: 16,
+                  }}
+                  autoFocus
+                  testID="collage-bg-custom-input"
+                />
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable
+                    className="bg-white rounded-full py-3.5 px-5 flex-row items-center justify-center border-[1.5px] border-[#1A1210] active:opacity-85"
+                    style={{ flex: 1 }}
+                    onPress={() => setShowBgPicker(false)}
+                  >
+                    <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 15, color: '#1A1210' }}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    className="bg-[#B87063] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85"
+                    style={{ flex: 1 }}
+                    onPress={() => {
+                      const hex = bgCustomDraft.trim();
+                      if (/^#[0-9A-Fa-f]{6}$/.test(hex)) {
+                        setBackground(hex);
+                        setBackgroundImage(null);
+                        setBackdropId(null);
+                      }
+                      setShowBgPicker(false);
+                    }}
+                    testID="collage-bg-custom-apply"
+                  >
+                    <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 15, color: '#FFFFFF' }}>Apply</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      ) : null}
+
+      {step === 'done' ? (
+        <SafeAreaView style={styles.flex} edges={['bottom']}>
+          <ScrollView contentContainerStyle={styles.donePad} testID="collage-done-step">
+            <Text style={styles.h1}>Saved.</Text>
+            <Text style={styles.body}>
+              Your collage is published and ready to share.
+            </Text>
+            <View style={styles.previewCanvasWrap}>
+              {savedLookCoverUri ? (
+                <Image
+                  source={{ uri: savedLookCoverUri }}
+                  style={{
+                    width: PREVIEW_DISPLAY_SIZE,
+                    height: PREVIEW_DISPLAY_SIZE,
+                    borderRadius: 16,
+                    backgroundColor: '#EDE6DF',
+                  }}
+                  contentFit="cover"
+                />
+              ) : null}
+            </View>
+            <View style={{ gap: 8, marginTop: 24 }}>
+              <Pressable
+                className="bg-[#B87063] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85"
+                style={{ shadowColor: '#1A1210', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2, minWidth: 240 }}
+                onPress={handleShareToStory}
+                testID="collage-share-story"
+              >
+                <Text
+                  className="ml-2 text-white text-[15px] font-semibold"
+                  style={{ fontFamily: 'DMSans_500Medium' }}
+                >
+                  Share to IG Story
+                </Text>
+              </Pressable>
+              <Pressable
+                style={styles.secondaryButton}
+                onPress={handleShareTikTok}
+                testID="collage-share-tiktok"
+              >
+                <Text style={styles.secondaryButtonText}>Share to TikTok</Text>
+              </Pressable>
+              <Pressable
+                style={styles.tertiaryButton}
+                onPress={handleBackToCloset}
+                testID="collage-done-back"
+              >
+                <Text style={styles.tertiaryButtonText}>Back to closet</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      ) : null}
+
+      <TryOnModelSheet
+        visible={showTryOnSheet}
+        onClose={() => setShowTryOnSheet(false)}
+        items={apparelItems}
+        creatorId={creatorId}
+        onGenerated={handleVirtualModelGenerated}
+      />
+
+      {tryOnToast ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            left: 24,
+            right: 24,
+            bottom: 48,
+            backgroundColor: 'rgba(26,18,16,0.92)',
+            paddingVertical: 12,
+            paddingHorizontal: 16,
+            borderRadius: 12,
+            alignItems: 'center',
+          }}
+          testID="collage-try-on-toast"
+        >
+          <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 13, color: '#FFFFFF' }}>
+            {tryOnToast}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* First-look mode: one-time tooltip overlay on first render of the
+          preview step. Dismissed by tap. Not persisted — session-only. */}
+      {isFirstLook && showFirstLookTooltip && step === 'preview' ? (
+        <Pressable
+          onPress={() => setShowFirstLookTooltip(false)}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(26,18,16,0.55)',
+            justifyContent: 'center',
+            paddingHorizontal: 28,
+            zIndex: 100,
+          }}
+          testID="collage-first-look-tooltip"
+        >
+          <View
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: 18,
+              padding: 20,
+              shadowColor: '#1A1210',
+              shadowOpacity: 0.18,
+              shadowRadius: 14,
+              shadowOffset: { width: 0, height: 6 },
+              elevation: 6,
+            }}
+          >
+            <Text
+              style={{
+                fontFamily: 'DMSans_700Bold',
+                fontSize: 18,
+                color: '#1A1210',
+                marginBottom: 8,
+              }}
+            >
+              Make it yours
+            </Text>
+            <Text
+              style={{
+                fontFamily: 'DMSans_400Regular',
+                fontSize: 14,
+                lineHeight: 20,
+                color: '#6B5E58',
+                marginBottom: 14,
+              }}
+            >
+              Drag to rearrange. Tap any item to swap its background. When
+              you love it — tap Publish.
+            </Text>
+            <Text
+              style={{
+                fontFamily: 'DMSans_500Medium',
+                fontSize: 13,
+                color: '#B87063',
+                textAlign: 'right',
+              }}
+              testID="collage-first-look-tooltip-dismiss"
+            >
+              Tap anywhere to dismiss
+            </Text>
+          </View>
+        </Pressable>
+      ) : null}
+    </GestureHandlerRootView>
+  );
+}
+
+interface TemplateThumbProps {
+  template: CollageTemplate;
+  selected: boolean;
+  onPress: () => void;
+  renderCanvas: (
+    id: CollageTemplateId,
+    size?: number,
+    ref?: React.Ref<View>
+  ) => React.ReactNode;
+}
+
+function TemplateThumb({ template, selected, onPress, renderCanvas }: TemplateThumbProps) {
+  return (
+    <Pressable
+      style={[styles.templateThumb, selected && styles.templateThumbSelected]}
+      onPress={onPress}
+      testID={`collage-template-${template.id}`}
+    >
+      <View
+        style={{
+          width: TEMPLATE_THUMB_W,
+          height: TEMPLATE_THUMB_W,
+          overflow: 'hidden',
+          borderRadius: 8,
+        }}
+      >
+        {renderCanvas(template.id, TEMPLATE_THUMB_W)}
+      </View>
+      <Text style={styles.templateName} numberOfLines={1}>
+        {template.name}
+      </Text>
+      <Text style={styles.templateDesc} numberOfLines={2}>
+        {template.description}
+      </Text>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#FFFFFF' },
+  flex: { flex: 1 },
+  fontLoading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF' },
+  h1: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 28,
+    color: '#1A1210',
+    marginBottom: 6,
+  },
+  h2: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 16,
+    color: '#1A1210',
+    marginTop: 16,
+  },
+  body: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#6B5E58',
+    lineHeight: 20,
+  },
+  bodyDim: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#8C8580',
+    marginTop: 4,
+  },
+  selfiePad: { padding: 20 },
+  selfiePreviewWrap: { alignItems: 'center', marginTop: 24 },
+  selfiePreview: {
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: '#F0EBE5',
+    overflow: 'hidden',
+  },
+  selfieImage: {
+    width: '100%',
+    height: '100%',
+  },
+  selfiePlaceholder: {
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: '#F7F4F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#E8E0D8',
+    borderStyle: 'dashed',
+    gap: 8,
+  },
+  selfiePlaceholderText: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 13,
+    color: '#8C8580',
+  },
+  selfieRemove: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  processingWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+  },
+  templatePad: { padding: 20 },
+  templateRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+    flexWrap: 'wrap',
+  },
+  templateThumb: {
+    padding: 8,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    backgroundColor: '#F7F4F0',
+    width: TEMPLATE_THUMB_W + 16,
+  },
+  templateThumbSelected: {
+    borderColor: '#B87063',
+  },
+  templateName: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 12,
+    color: '#1A1210',
+    marginTop: 6,
+  },
+  templateDesc: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 10,
+    color: '#6B5E58',
+    marginTop: 2,
+    minHeight: 22,
+  },
+  previewPad: { padding: 20, alignItems: 'center' },
+  collageNameWrap: {
+    alignSelf: 'stretch',
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  collageNameInput: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#D4C8C2',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#1A1210',
+    fontFamily: 'DMSans_500Medium',
+  },
+  previewCanvasWrap: {
+    marginTop: 16,
+    marginBottom: 24,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+  donePad: { padding: 20, alignItems: 'center' },
+  secondaryButton: {
+    backgroundColor: '#F7F4F0',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    minWidth: 240,
+  },
+  secondaryButtonText: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 15,
+    color: '#1A1210',
+  },
+  tertiaryButton: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  tertiaryButtonText: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 14,
+    color: '#6B5E58',
+  },
+  resetButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+    backgroundColor: '#F0EBE5',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  resetButtonText: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 13,
+    color: '#1A1210',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    gap: 12,
+  },
+  modalLabel: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 13,
+    color: '#6B5E58',
+    textTransform: 'uppercase',
+    letterSpacing: 1.2,
+  },
+  modalInput: {
+    fontSize: 24,
+    color: '#1A1210',
+    paddingVertical: 8,
+    paddingHorizontal: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E8E0D8',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  flagFallback: { flex: 1, backgroundColor: '#FFFFFF' },
+  flagBack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    padding: 16,
+  },
+  flagBackText: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 14,
+    color: '#1A1210',
+  },
+  flagBody: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
+  flagTitle: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 28,
+    color: '#1A1210',
+    marginBottom: 8,
+  },
+  flagSub: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#6B5E58',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+});

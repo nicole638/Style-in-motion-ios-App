@@ -1,0 +1,351 @@
+import React, { useEffect } from 'react';
+import { View } from 'react-native';
+import { Image } from 'expo-image';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  runOnJS,
+  type SharedValue,
+} from 'react-native-reanimated';
+import { CANVAS_SIZE } from '@/lib/constants/collageSlots';
+import { CANVAS_DISPLAY_SIZE } from './canvasShared';
+
+/** Scale clamps for pinch.
+ *
+ * Loosened from the original 0.3–2.5 range so items in small slots
+ * (280×280 in canvas coords) can grow large enough to anchor the
+ * composition (×4.5 = 1260×1260, > full canvas), and so accessories /
+ * jewelry can shrink to a true satellite size (×0.15 of a 280×280 slot
+ * = 42×42, perfect for a watch or earring detail near a larger piece).
+ * The tight original range made items feel stuck at a fixed scale.
+ *
+ * Exported so the canvas-level pinch/rotation handler (BaseCanvas) clamps
+ * to the same bounds. */
+export const MIN_SCALE = 0.15;
+export const MAX_SCALE = 4.5;
+
+export interface InteractiveCanvasItemProps {
+  itemId: string;
+  photoUri?: string;               // optional — rendered only when children is absent
+  children?: React.ReactNode;      // rendered instead of <Image> when present
+  /** Canvas-space center X (0–1080). */
+  x: number;
+  /** Canvas-space center Y (0–1080). */
+  y: number;
+  /** Multiplicative scale on top of base width/height. */
+  scale: number;
+  /** Base item dimensions in canvas space. */
+  baseWidth: number;
+  baseHeight: number;
+  /** Item rotation in degrees — user-modifiable via two-finger gesture. */
+  rotation: number;
+  /** Display size of the canvas in points (defaults to CANVAS_DISPLAY_SIZE). */
+  canvasSize?: number;
+  /**
+   * Canvas-space height in 1080-units. Defaults to CANVAS_SIZE (1080 = square,
+   * the collage canvas). Portrait surfaces (Style-a-Look hero, 1080×1440) pass
+   * 1440 so the pan clamp lets text travel the full height instead of snapping
+   * back at the square boundary.
+   */
+  canvasHeightUnits?: number;
+  selected: boolean;
+  exporting?: boolean;
+  onSelect: (itemId: string) => void;
+  /** Called when pan/pinch/rotation finalizes. */
+  onCommit: (
+    itemId: string,
+    next: { x: number; y: number; scale: number; rotation: number }
+  ) => void;
+  /**
+   * Shape-accurate, top-most-first hit routing. When these are provided the
+   * item's own tap/pan no longer act on itself directly; instead they resolve
+   * the ACTUAL topmost-opaque target under the finger (which may be a lower
+   * item) and drive it via the canvas-owned shared drag values below.
+   *
+   * `onResolveSelect` resolves + selects (or deselects) the target for a tap.
+   * `onSeedDrag` resolves + selects the target and seeds the drag shared values
+   *   (dragId/dragX/dragY/dragActive + startDrag*). Returns void.
+   * `onDragCommit` commits the (already-clamped) final position for a target.
+   */
+  onResolveSelect?: (absX: number, absY: number) => void;
+  onSeedDrag?: (absX: number, absY: number) => void;
+  onDragCommit?: (id: string, kind: 'item' | 'layer', x: number, y: number) => void;
+  /**
+   * Fired (on JS) at the very start of any tap/pan on this item, before the
+   * gesture resolves. The canvas uses this to refresh its window origin so the
+   * touch→canvas coordinate conversion is always current — even on the first
+   * tap after a draft opens or after the canvas has been scrolled.
+   */
+  onGestureBegin?: () => void;
+  /**
+   * Shared flag driving the host ScrollView's `scrollEnabled` (inverted). Set
+   * `true` on gesture begin to lock scroll while a piece is being touched/dragged
+   * and `false` on finalize. Driven purely on the UI thread via a shared value so
+   * there is NO React re-render mid-drag and NO runOnJS hop — the crash-free way
+   * to arbitrate item-drag vs. page-scroll.
+   */
+  scrollLock?: SharedValue<boolean>;
+  /** Canvas-owned drag shared values (mirror of the pinch pattern). */
+  dragId?: SharedValue<string>;
+  dragX?: SharedValue<number>;
+  dragY?: SharedValue<number>;
+  dragActive?: SharedValue<boolean>;
+  startDragX?: SharedValue<number>;
+  startDragY?: SharedValue<number>;
+  /**
+   * Canvas-level live pinch/rotation feedback. Pinch & rotation are handled on
+   * the canvas root (so a second finger landing off this item still works) and
+   * write to these shared values. When `pinchActive` is true AND this item is
+   * `selected`, we render from these instead of our own committed scale/rotation.
+   */
+  liveScale?: SharedValue<number>;
+  liveRotation?: SharedValue<number>;
+  pinchActive?: SharedValue<boolean>;
+  testID?: string;
+}
+
+export const InteractiveCanvasItem = React.memo(function InteractiveCanvasItem({
+  itemId,
+  photoUri,
+  children,
+  x,
+  y,
+  scale,
+  baseWidth,
+  baseHeight,
+  rotation,
+  canvasSize = CANVAS_DISPLAY_SIZE,
+  canvasHeightUnits = CANVAS_SIZE,
+  selected,
+  exporting,
+  onSelect,
+  onCommit,
+  onResolveSelect,
+  onSeedDrag,
+  onDragCommit,
+  onGestureBegin,
+  scrollLock,
+  dragId,
+  dragX,
+  dragY,
+  dragActive,
+  startDragX,
+  startDragY,
+  liveScale,
+  liveRotation,
+  pinchActive,
+  testID,
+}: InteractiveCanvasItemProps) {
+  const ratio = canvasSize / CANVAS_SIZE;
+
+  // All shared values are in canvas-space so the math stays consistent
+  // with what we save back to the DB.
+  const cx = useSharedValue(x);
+  const cy = useSharedValue(y);
+  const s = useSharedValue(scale);
+  const r = useSharedValue(rotation);
+  const startCx = useSharedValue(x);
+  const startCy = useSharedValue(y);
+  const startS = useSharedValue(scale);
+  const startR = useSharedValue(rotation);
+
+  // Sync shared values when props change (e.g. Reset layout, edit reopen).
+  useEffect(() => {
+    cx.value = x;
+    cy.value = y;
+    s.value = scale;
+    r.value = rotation;
+    startCx.value = x;
+    startCy.value = y;
+    startS.value = scale;
+    startR.value = rotation;
+  }, [x, y, scale, rotation, cx, cy, s, r, startCx, startCy, startS, startR]);
+
+  const handleSelect = () => onSelect(itemId);
+  const handleCommit = (nx: number, ny: number, nScale: number, nRotation: number) => {
+    onCommit(itemId, { x: nx, y: ny, scale: nScale, rotation: nRotation });
+  };
+
+  // Shape-accurate routing is active when the canvas wires up the resolve/drag
+  // props. In that mode, tap/pan resolve the topmost-opaque target under the
+  // finger (which may be a DIFFERENT, lower item) and drive it via canvas-owned
+  // shared values. Because this item's rectangle always contains the touch,
+  // resolving across all entries finds the correct target even when it's below.
+  const routed =
+    !!onResolveSelect &&
+    !!onSeedDrag &&
+    !!onDragCommit &&
+    !!dragId &&
+    !!dragX &&
+    !!dragY &&
+    !!dragActive &&
+    !!startDragX &&
+    !!startDragY;
+
+  const tap = Gesture.Tap()
+    .maxDuration(250)
+    .onBegin(() => {
+      'worklet';
+      // Lock the host ScrollView on the UI thread — a shared-value write, no
+      // thread hop and no React re-render mid-gesture.
+      if (scrollLock) scrollLock.value = true;
+      // Refresh the canvas window origin before we resolve on the JS thread, so
+      // a first-load (unmeasured) or post-scroll origin can't map this tap to
+      // garbage canvas coords. The async measure lands before onEnd runs.
+      if (onGestureBegin) runOnJS(onGestureBegin)();
+    })
+    .onEnd((e) => {
+      'worklet';
+      if (routed && onResolveSelect) {
+        runOnJS(onResolveSelect)(e.absoluteX, e.absoluteY);
+      } else {
+        runOnJS(handleSelect)();
+      }
+    })
+    .onFinalize(() => {
+      'worklet';
+      // Re-enable host scroll whether the tap succeeded or was cancelled.
+      if (scrollLock) scrollLock.value = false;
+    });
+
+  const pan = Gesture.Pan()
+    // Single-finger only: a second finger must fall through to the canvas-level
+    // pinch/rotation recognizer. Without this, both fingers landing on a large
+    // hero item make the per-item pan fight the canvas pinch → jerky scaling.
+    .maxPointers(1)
+    .onBegin((e) => {
+      'worklet';
+      // Lock the host ScrollView on the UI thread (shared-value write only).
+      if (scrollLock) scrollLock.value = true;
+      // Refresh the window origin first (see tap.onBegin). measureInWindow is
+      // async but resolves before the JS-thread seedDrag reads the origin.
+      if (onGestureBegin) runOnJS(onGestureBegin)();
+      if (routed && onSeedDrag) {
+        // Resolve + select the real target and seed drag shared values on JS.
+        runOnJS(onSeedDrag)(e.absoluteX, e.absoluteY);
+      }
+    })
+    .onStart(() => {
+      'worklet';
+      if (!routed) {
+        startCx.value = cx.value;
+        startCy.value = cy.value;
+        runOnJS(handleSelect)();
+      }
+    })
+    .onUpdate((e) => {
+      'worklet';
+      if (routed) {
+        // Drive the resolved target (any item) via canvas-owned shared values.
+        if (!dragActive || !dragActive.value) return;
+        if (dragX && startDragX) dragX.value = startDragX.value + e.translationX / ratio;
+        if (dragY && startDragY) dragY.value = startDragY.value + e.translationY / ratio;
+        return;
+      }
+      // Convert display-space delta back to canvas-space.
+      cx.value = startCx.value + e.translationX / ratio;
+      cy.value = startCy.value + e.translationY / ratio;
+    })
+    .onEnd(() => {
+      'worklet';
+      if (routed) {
+        if (!dragActive || !dragActive.value) return;
+        // The resolved target owns its own base dims/scale for clamping; we clamp
+        // conservatively against the canvas using this item's committed scale as a
+        // proxy is WRONG for a different target, so let the JS commit clamp using
+        // the target's real geometry. Here we just hand off the raw dragX/dragY.
+        const nx = dragX ? dragX.value : cx.value;
+        const ny = dragY ? dragY.value : cy.value;
+        if (onDragCommit && dragId) runOnJS(onDragCommit)(dragId.value, 'item', nx, ny);
+        dragActive.value = false;
+        return;
+      }
+      // Clamp center within the canvas so items never disappear off-screen.
+      const halfW = (baseWidth * s.value) / 2;
+      const halfH = (baseHeight * s.value) / 2;
+      const minX = halfW * 0.25;
+      const maxX = CANVAS_SIZE - halfW * 0.25;
+      const minY = halfH * 0.25;
+      const maxY = canvasHeightUnits - halfH * 0.25;
+      cx.value = Math.min(maxX, Math.max(minX, cx.value));
+      cy.value = Math.min(maxY, Math.max(minY, cy.value));
+      runOnJS(handleCommit)(cx.value, cy.value, s.value, r.value);
+    })
+    .onFinalize(() => {
+      'worklet';
+      // Re-enable host scroll whether the pan committed or was cancelled.
+      if (scrollLock) scrollLock.value = false;
+    });
+
+  // Pinch & rotation are handled at the canvas level (see BaseCanvas) so the
+  // second finger can land anywhere — not just on this item's view. Here we
+  // keep tap (select) and pan (move), which only need a single pointer.
+  const composed = Gesture.Race(tap, pan);
+
+  const animatedStyle = useAnimatedStyle(() => {
+    // When a routed drag targets THIS item, render from the canvas-owned drag
+    // shared values so the moved item follows the finger even though the pan
+    // gesture originated on a different (overlapping) item's view.
+    const dragging =
+      !!dragActive && dragActive.value && !!dragId && dragId.value === itemId;
+    const centerX = dragging && dragX ? dragX.value : cx.value;
+    const centerY = dragging && dragY ? dragY.value : cy.value;
+    const left = (centerX - baseWidth / 2) * ratio;
+    const top = (centerY - baseHeight / 2) * ratio;
+    // While a canvas-level pinch/rotation is in flight on THIS (selected) item,
+    // render from the live shared values for immediate feedback; otherwise use
+    // our own committed scale/rotation.
+    const live = selected && pinchActive ? pinchActive.value : false;
+    const sc = live && liveScale ? liveScale.value : s.value;
+    const rot = live && liveRotation ? liveRotation.value : r.value;
+    return {
+      position: 'absolute',
+      left,
+      top,
+      width: baseWidth * ratio,
+      height: baseHeight * ratio,
+      transform: [
+        { scale: sc },
+        { rotate: `${rot}deg` },
+      ],
+    };
+  });
+
+  return (
+    <GestureDetector gesture={composed}>
+      <Animated.View style={animatedStyle} testID={testID}>
+        <View style={{ flex: 1, backgroundColor: 'transparent' }}>
+          {children ? (
+            children
+          ) : photoUri ? (
+            <Image
+              source={{ uri: photoUri }}
+              style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
+              contentFit="contain"
+              cachePolicy="memory-disk"
+              recyclingKey={photoUri}
+              allowDownscaling={!exporting}
+              transition={0}
+            />
+          ) : null}
+        </View>
+        {selected && !exporting ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              borderWidth: 2,
+              borderColor: '#B89968',
+              borderRadius: 4,
+            }}
+          />
+        ) : null}
+      </Animated.View>
+    </GestureDetector>
+  );
+});

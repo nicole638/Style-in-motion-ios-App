@@ -1,0 +1,272 @@
+import React, { useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  TextInput,
+  StyleSheet,
+} from 'react-native';
+import { Image } from 'expo-image';
+import * as Haptics from 'expo-haptics';
+import { Check, ChevronDown, Plus, Search, X } from 'lucide-react-native';
+import type { ClothingItem, ItemCategory } from '@/lib/state/lookStore';
+import { decodeHtmlEntities } from '@/lib/decode-entities';
+import CategoryChips from '@/components/CategoryChips';
+import { filterClosetItems } from '@/lib/utils/filterClosetItems';
+import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
+
+export interface CollageAddTrayProps {
+  /** The creator's closet (unfiltered — we apply archived/cutout + chip/search filters here). */
+  closetItems: ClothingItem[];
+  /** ids already on the canvas (get a check badge; tapping re-selects, never duplicates). */
+  placedIds: Set<string>;
+  /** Drop a piece onto the canvas (or re-select if already placed). Does NOT close the tray. */
+  onAdd: (item: ClothingItem) => void;
+}
+
+const THUMB = 68;
+
+/**
+ * Always-open "Add pieces" tray pinned to the bottom of the collage builder.
+ * A tap drops a closet cutout straight onto the canvas — no modal round-trip —
+ * and the tray stays open for rapid multi-add. Collapsible to a slim handle.
+ */
+export function CollageAddTray({ closetItems, placedIds, onAdd }: CollageAddTrayProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState<ItemCategory | null>(null);
+  const debouncedSearch = useDebouncedValue(search, 250);
+
+  // Same source set as the modal picker: non-archived closet pieces that have a
+  // usable image. Cutout preferred; raw photo is the canvas fallback.
+  const items = useMemo(
+    () => closetItems.filter((i) => !i.archived && (!!i.cutout_photo_url || !!i.photoUri)),
+    [closetItems]
+  );
+
+  const visible = useMemo(
+    () => filterClosetItems(items, debouncedSearch, categoryFilter),
+    [items, debouncedSearch, categoryFilter]
+  );
+
+  const handleAdd = (item: ClothingItem) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    onAdd(item);
+  };
+
+  if (items.length === 0) return null;
+
+  if (collapsed) {
+    return (
+      <View style={styles.collapsedBar}>
+        <Pressable
+          onPress={() => { Haptics.selectionAsync().catch(() => {}); setCollapsed(false); }}
+          className="flex-row items-center justify-center gap-1.5 py-2 px-4 active:opacity-70"
+          testID="collage-tray-expand"
+        >
+          <Plus size={16} color="#1A1210" />
+          <Text style={{ fontFamily: 'DMSans_500Medium', fontSize: 14, color: '#1A1210' }}>Add pieces</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.root} testID="collage-add-tray">
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.title}>Add pieces</Text>
+        <Pressable
+          onPress={() => { Haptics.selectionAsync().catch(() => {}); setCollapsed(true); }}
+          hitSlop={10}
+          className="flex-row items-center justify-center py-1.5 px-2 active:opacity-70"
+          testID="collage-tray-collapse"
+        >
+          <ChevronDown size={20} color="#6B5E58" />
+        </Pressable>
+      </View>
+
+      {/* Search */}
+      <View style={styles.searchWrap}>
+        <View style={styles.searchBar}>
+          <Search size={16} color="#8C8580" strokeWidth={2} />
+          <TextInput
+            style={styles.searchInput}
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search your closet…"
+            placeholderTextColor="#8C8580"
+            cursorColor="#1A1210"
+            selectionColor="rgba(26,18,16,0.3)"
+            returnKeyType="search"
+            testID="collage-tray-search"
+          />
+          {search.length > 0 ? (
+            <Pressable onPress={() => setSearch('')} hitSlop={8} testID="collage-tray-search-clear">
+              <X size={16} color="#8C8580" strokeWidth={2} />
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+
+      {/* Category chips */}
+      <CategoryChips selected={categoryFilter} onSelect={setCategoryFilter} style={styles.chips} />
+
+      {/* Thumbnails */}
+      {visible.length === 0 ? (
+        <View style={styles.empty}>
+          <Text style={styles.emptyText}>No items match your filters.</Text>
+        </View>
+      ) : (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.row}
+          style={{ flexGrow: 0 }}
+          testID="collage-tray-scroll"
+        >
+          {visible.map((item) => {
+            const placed = placedIds.has(item.id);
+            const uri = item.cutout_photo_url || item.photoUri;
+            return (
+              <Pressable
+                key={item.id}
+                onPress={() => handleAdd(item)}
+                style={styles.thumb}
+                testID={`collage-tray-item-${item.id}`}
+              >
+                <View style={styles.thumbImageWrap}>
+                  {uri ? (
+                    <Image source={{ uri }} style={styles.thumbImage} contentFit="contain" />
+                  ) : (
+                    <Text style={{ fontSize: 26 }}>{item.emoji}</Text>
+                  )}
+                  {placed ? (
+                    <View style={styles.placedBadge} testID={`collage-tray-placed-${item.id}`}>
+                      <Check size={11} color="#FFFFFF" strokeWidth={3} />
+                    </View>
+                  ) : null}
+                </View>
+                <Text style={styles.thumbLabel} numberOfLines={1}>
+                  {decodeHtmlEntities(item.name) || item.category}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+export default CollageAddTray;
+
+const styles = StyleSheet.create({
+  root: {
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8E0D8',
+    paddingTop: 8,
+    paddingBottom: 6,
+    shadowColor: '#1A1210',
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: -3 },
+    elevation: 8,
+  },
+  collapsedBar: {
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E8E0D8',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 6,
+  },
+  title: {
+    fontFamily: 'DMSans_600SemiBold',
+    fontSize: 14,
+    color: '#1A1210',
+  },
+  searchWrap: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0EBE5',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 38,
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#1A1210',
+    height: 38,
+  },
+  chips: {
+    marginBottom: 6,
+  },
+  row: {
+    paddingHorizontal: 12,
+    gap: 10,
+    paddingVertical: 4,
+  },
+  thumb: {
+    width: THUMB,
+    alignItems: 'center',
+  },
+  thumbImageWrap: {
+    width: THUMB,
+    height: THUMB,
+    borderRadius: 12,
+    backgroundColor: '#F5F1EC',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  thumbImage: {
+    width: '100%',
+    height: '100%',
+  },
+  placedBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#B87063',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  thumbLabel: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 10,
+    color: '#6B5E58',
+    marginTop: 3,
+    maxWidth: THUMB,
+    textAlign: 'center',
+  },
+  empty: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#8C8580',
+  },
+});

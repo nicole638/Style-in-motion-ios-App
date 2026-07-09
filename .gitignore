@@ -1,0 +1,18 @@
+# dependencies / build output
+node_modules/
+.expo/
+dist/
+build/
+.next/
+.turbo/
+.cache/
+
+# secrets — real values live in Supabase function secrets / EAS secrets.
+# See backend/.env.example and mobile/.env.example for the variable names.
+.env
+.env.*
+!.env.example
+
+# logs & OS junk
+*.log
+.DS_Store

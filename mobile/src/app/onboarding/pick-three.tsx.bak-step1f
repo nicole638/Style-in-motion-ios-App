@@ -1,0 +1,289 @@
+import React, { useState, useCallback, useMemo } from 'react';
+import { View, Text, Pressable, ScrollView, ActivityIndicator, Dimensions } from 'react-native';
+import { Image } from 'expo-image';
+import { router, Stack } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
+import { DMSans_400Regular, DMSans_500Medium, DMSans_700Bold } from '@expo-google-fonts/dm-sans';
+import { useQuery } from '@tanstack/react-query';
+import * as Haptics from 'expo-haptics';
+import { ArrowLeft, ArrowRight, CheckCircle2 } from 'lucide-react-native';
+import useAuthStore from '@/lib/state/authStore';
+import useFirstLookStore from '@/lib/state/firstLookStore';
+import { supabase } from '@/lib/supabase';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const GRID_GAP = 12;
+const GRID_PAD = 24;
+const TILE_SIZE = (SCREEN_WIDTH - GRID_PAD * 2 - GRID_GAP) / 2;
+
+interface StarterItem {
+  id: string;
+  name: string;
+  photoUrl: string | null;
+}
+
+/**
+ * Fetches the creator's starter-pack items. Tries `from_starter_pack = true`
+ * first; if the column doesn't exist (the seed_starter_pack RPC hasn't been
+ * deployed yet) we fall back to "any 8 closet items for this creator". Both
+ * branches cap at 8 and return a uniform StarterItem shape.
+ */
+async function fetchStarterItems(creatorId: string): Promise<StarterItem[]> {
+  // Branch A — column exists, filter on it.
+  const starter = await supabase
+    .from('creator_items')
+    .select('id, name, photo_url, cutout_photo_url')
+    .eq('creator_id', creatorId)
+    .eq('archived', false)
+    .eq('from_starter_pack', true)
+    .limit(8);
+
+  if (!starter.error && Array.isArray(starter.data) && starter.data.length > 0) {
+    return starter.data.map((row: any) => ({
+      id: String(row.id),
+      name: String(row.name ?? 'Item'),
+      photoUrl: row.cutout_photo_url ?? row.photo_url ?? null,
+    }));
+  }
+
+  // Branch B — column missing or empty. Fall back to recent items.
+  const fallback = await supabase
+    .from('creator_items')
+    .select('id, name, photo_url, cutout_photo_url')
+    .eq('creator_id', creatorId)
+    .eq('archived', false)
+    .order('created_at', { ascending: false })
+    .limit(8);
+
+  if (fallback.error) {
+    console.warn('[pick-three] fallback closet query failed:', fallback.error.message);
+    return [];
+  }
+  return (fallback.data ?? []).map((row: any) => ({
+    id: String(row.id),
+    name: String(row.name ?? 'Item'),
+    photoUrl: row.cutout_photo_url ?? row.photo_url ?? null,
+  }));
+}
+
+export default function OnboardingPickThreeScreen() {
+  const creatorId = useAuthStore((s) => s.creatorId);
+  const setPickedItemIds = useFirstLookStore((s) => s.setPickedItemIds);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const [fontsLoaded] = useFonts({
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_700Bold,
+  });
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['firstLookStarterItems', creatorId],
+    queryFn: () => fetchStarterItems(creatorId!),
+    enabled: !!creatorId,
+    staleTime: 1000 * 60 * 5,
+  });
+
+  const items: StarterItem[] = useMemo(() => data ?? [], [data]);
+
+  const toggleItem = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) {
+        Haptics.selectionAsync().catch(() => {});
+        return prev.filter((x) => x !== id);
+      }
+      if (prev.length >= 3) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        return prev;
+      }
+      Haptics.selectionAsync().catch(() => {});
+      return [...prev, id];
+    });
+  }, []);
+
+  const canContinue = selectedIds.length === 3;
+
+  const handleContinue = useCallback(() => {
+    if (!canContinue) return;
+    setPickedItemIds(selectedIds);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    router.push({
+      pathname: '/collage-builder',
+      params: { firstLook: 'true', itemIds: selectedIds.join(',') },
+    } as any);
+  }, [canContinue, selectedIds, setPickedItemIds]);
+
+  const handleAddOwnItem = useCallback(() => {
+    router.push('/add-closet-item' as any);
+  }, []);
+
+  if (!fontsLoaded) {
+    return <View style={{ flex: 1, backgroundColor: '#F7F4F0' }} />;
+  }
+
+  const showEmptyFallback = !isLoading && items.length === 0;
+
+  return (
+    <SafeAreaView
+      className="flex-1 bg-[#F7F4F0]"
+      edges={['top', 'bottom']}
+      testID="onboarding-pick-three-screen"
+    >
+      <Stack.Screen options={{ headerShown: false, gestureEnabled: false }} />
+
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ paddingHorizontal: GRID_PAD, paddingTop: 24, paddingBottom: 24 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <Pressable
+          onPress={() => router.back()}
+          className="w-10 h-10 rounded-full bg-white items-center justify-center mb-5 active:opacity-80"
+          style={{ shadowColor: '#1A1210', shadowOpacity: 0.06, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } }}
+          hitSlop={8}
+          testID="onboarding-pick-three-back"
+        >
+          <ArrowLeft size={20} color="#1A1210" />
+        </Pressable>
+        <Text
+          className="text-[28px] text-[#1A1210]"
+          style={{ fontFamily: 'DMSans_700Bold', lineHeight: 34 }}
+          testID="onboarding-pick-three-title"
+        >
+          Pick 3 to feature in your first look
+        </Text>
+
+        {isLoading ? (
+          <View className="items-center justify-center py-20" testID="pick-three-loading">
+            <ActivityIndicator color="#B87063" />
+          </View>
+        ) : null}
+
+        {showEmptyFallback ? (
+          <View className="mt-8" testID="pick-three-empty-fallback">
+            <Text
+              className="text-[16px] text-[#6B5E58]"
+              style={{ fontFamily: 'DMSans_400Regular', lineHeight: 22 }}
+            >
+              We couldn{`'`}t load your starter pack. Paste an item URL to get
+              started.
+            </Text>
+            <Pressable
+              onPress={handleAddOwnItem}
+              className="bg-[#B87063] rounded-full flex-row items-center justify-center active:opacity-85 mt-6"
+              style={{ height: 52 }}
+              testID="pick-three-add-item-cta"
+            >
+              <Text
+                className="text-white text-[15px]"
+                style={{ fontFamily: 'DMSans_500Medium' }}
+              >
+                Add an item
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        {!isLoading && items.length > 0 ? (
+          <View
+            className="flex-row flex-wrap mt-6"
+            style={{ gap: GRID_GAP }}
+          >
+            {items.map((item) => {
+              const isSelected = selectedIds.includes(item.id);
+              return (
+                <Pressable
+                  key={item.id}
+                  onPress={() => toggleItem(item.id)}
+                  className="bg-white rounded-2xl active:opacity-90"
+                  style={{
+                    width: TILE_SIZE,
+                    borderWidth: isSelected ? 2 : 1,
+                    borderColor: isSelected ? '#B87063' : '#E8E0D8',
+                    overflow: 'hidden',
+                  }}
+                  testID={`pick-three-tile-${item.id}`}
+                >
+                  <View style={{ width: '100%', height: TILE_SIZE, backgroundColor: '#FBF6EF' }}>
+                    {item.photoUrl ? (
+                      <Image
+                        source={{ uri: item.photoUrl }}
+                        style={{ width: '100%', height: '100%' }}
+                        contentFit="cover"
+                        transition={200}
+                      />
+                    ) : null}
+                    {isSelected ? (
+                      <View style={{ position: 'absolute', top: 8, right: 8 }}>
+                        <CheckCircle2 size={24} color="#B87063" fill="#FFFFFF" strokeWidth={2.25} />
+                      </View>
+                    ) : null}
+                  </View>
+                  <View className="px-2.5 py-2">
+                    <Text
+                      numberOfLines={1}
+                      className="text-[13px] text-[#1A1210]"
+                      style={{ fontFamily: 'DMSans_500Medium' }}
+                    >
+                      {item.name}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
+
+        {!isLoading && items.length > 0 ? (
+          <Pressable
+            onPress={handleAddOwnItem}
+            className="flex-row items-center justify-center gap-1.5 py-3 px-3 active:opacity-70 mt-6"
+            testID="pick-three-add-own-item"
+          >
+            <Text
+              className="text-[#6B5E58] text-sm"
+              style={{ fontFamily: 'DMSans_500Medium' }}
+            >
+              Or add your own item
+            </Text>
+            <ArrowRight size={14} color="#6B5E58" />
+          </Pressable>
+        ) : null}
+      </ScrollView>
+
+      {!showEmptyFallback ? (
+        <View className="px-6 pb-4">
+          <Pressable
+            onPress={handleContinue}
+            disabled={!canContinue}
+            className={
+              canContinue
+                ? 'bg-[#B87063] rounded-full flex-row items-center justify-center active:opacity-85'
+                : 'bg-[#D5CDC7] rounded-full flex-row items-center justify-center'
+            }
+            style={{
+              height: 52,
+              shadowColor: '#1A1210',
+              shadowOpacity: canContinue ? 0.12 : 0,
+              shadowRadius: 8,
+              shadowOffset: { width: 0, height: 2 },
+              elevation: canContinue ? 2 : 0,
+            }}
+            testID="pick-three-continue"
+          >
+            <Text
+              className={canContinue ? 'text-white text-[15px]' : 'text-[#6B5E58] text-[15px]'}
+              style={{ fontFamily: 'DMSans_500Medium' }}
+            >
+              {canContinue ? 'Compose look' : 'Pick 3 to continue'}
+            </Text>
+            {canContinue ? (
+              <ArrowRight size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
+            ) : null}
+          </Pressable>
+        </View>
+      ) : null}
+    </SafeAreaView>
+  );
+}

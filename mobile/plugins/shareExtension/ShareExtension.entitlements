@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- MUST match the App Group on the main app (app.json ios.entitlements)
+	     and SHARE_APP_GROUP in mobile/src/lib/share/deviceToken.ts. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>__APP_GROUP__</string>
+	</array>
+</dict>
+</plist>

@@ -1,0 +1,363 @@
+// "Your performance" hero card — surfaced at the top of the Closet (home) tab
+// for the first 30 days after signup. Designed to nudge dormant creators by
+// reflecting their own engagement back at them. Auto-hides when:
+//   - signup is >= 30 days old, OR
+//   - clickCount >= 10 (creator already has feedback flowing in)
+//
+// Read-only against looks + click_events. No spinner; while counts load, the
+// card renders nothing.
+import React, { useCallback, useState } from 'react';
+import {
+  View,
+  Text,
+  Pressable,
+  Share,
+  Modal,
+  StyleSheet,
+} from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
+import * as Haptics from 'expo-haptics';
+import { ChevronRight, X } from 'lucide-react-native';
+import useAuthStore from '@/lib/state/authStore';
+import useProfileStore from '@/lib/state/profileStore';
+import { useCreatorStats } from '@/lib/queries/creatorStats';
+
+const HIDE_AFTER_DAYS = 30;
+const HIDE_AFTER_CLICKS = 10;
+
+// Spec calls for a public web URL like styledinmotion.studio/{username}.
+function buildProfileShareUrl(username: string): string {
+  return `https://styledinmotion.studio/${encodeURIComponent(username)}`;
+}
+
+export function PerformanceCard() {
+  const creatorId = useAuthStore((s) => s.creatorId);
+  const username = useProfileStore((s) => s.username);
+  const { data, isSuccess, refetch } = useCreatorStats(creatorId);
+  const [tipsOpen, setTipsOpen] = useState<boolean>(false);
+
+  // Refresh counts when the home tab regains focus (e.g. after publishing
+  // a first look) so the card leaves the "create your first look" state
+  // instead of showing stale cached counts (useCreatorStats is
+  // staleTime: Infinity for the session).
+  useFocusEffect(
+    useCallback(() => {
+      refetch();
+    }, [refetch])
+  );
+
+  const handleShareProfile = useCallback(async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    const trimmed = (username ?? '').trim();
+    if (!trimmed) {
+      // No username yet — bounce them to their account so they can set one.
+      router.push('/creator-account');
+      return;
+    }
+    const url = buildProfileShareUrl(trimmed);
+    try {
+      await Share.share({
+        url,
+        message: `Shop my looks: ${url}`,
+        title: 'Styled in Motion',
+      });
+    } catch (err) {
+      console.warn('[PerformanceCard] share failed:', err);
+    }
+  }, [username]);
+
+  const handleSeeStats = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    router.push('/creator-stats');
+  }, []);
+
+  const handleCreateFirstLook = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    // Route into the golden path (aesthetic -> seed closet -> pick -> collage)
+    // so the first-look CTA never dead-ends on an empty closet.
+    router.push('/onboarding/aesthetic');
+  }, []);
+
+  const handleOpenTips = useCallback(() => {
+    Haptics.selectionAsync().catch(() => {});
+    setTipsOpen(true);
+  }, []);
+
+  // No spinner per spec — render nothing until counts have resolved.
+  if (!isSuccess || !data) return null;
+
+  const { publishedLookCount, clickCount, signupAge } = data;
+
+  // Auto-hide gates.
+  if (signupAge >= HIDE_AFTER_DAYS) return null;
+  if (clickCount >= HIDE_AFTER_CLICKS) return null;
+
+  // Pick state.
+  let body: React.ReactNode;
+  if (publishedLookCount === 0 && clickCount === 0) {
+    // State A — never published.
+    body = (
+      <>
+        <Text style={styles.title} testID="performance-card-title-a">
+          Welcome to Styled in Motion
+        </Text>
+        <Text style={styles.subtext}>
+          You haven&apos;t published a look yet. The first one is the only hard part.
+        </Text>
+        <Pressable
+          onPress={handleCreateFirstLook}
+          className="bg-[#1A1210] rounded-full py-3 px-5 flex-row items-center justify-center active:opacity-85"
+          style={styles.ctaSpacing}
+          testID="performance-card-cta-create"
+        >
+          <Text
+            style={{ fontFamily: 'DMSans_500Medium' }}
+            className="text-white text-[14px] font-semibold"
+          >
+            Create your first look
+          </Text>
+          <ChevronRight size={16} color="#FFFFFF" strokeWidth={2} style={{ marginLeft: 6 }} />
+        </Pressable>
+      </>
+    );
+  } else if (publishedLookCount >= 1 && clickCount === 0) {
+    // State B — published but no clicks yet.
+    const lookWord = publishedLookCount === 1 ? 'look' : 'looks';
+    body = (
+      <>
+        <Text style={styles.title} testID="performance-card-title-b">
+          You&apos;ve published {publishedLookCount} {lookWord}
+        </Text>
+        <Text style={styles.subtext}>
+          0 clicks yet — share your link to drive your first one.
+        </Text>
+        <View style={styles.ctaRow}>
+          <Pressable
+            onPress={handleShareProfile}
+            className="bg-[#1A1210] rounded-full py-3 px-4 flex-row items-center justify-center active:opacity-85"
+            style={{ flex: 1 }}
+            testID="performance-card-cta-share"
+          >
+            <Text
+              style={{ fontFamily: 'DMSans_500Medium' }}
+              className="text-white text-[14px] font-semibold"
+            >
+              Share my profile
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={handleOpenTips}
+            className="bg-white rounded-full py-3 px-4 flex-row items-center justify-center border-[1.5px] border-[#1A1210] active:opacity-85"
+            testID="performance-card-cta-tips"
+          >
+            <Text
+              style={{ fontFamily: 'DMSans_500Medium' }}
+              className="text-[#1A1210] text-[14px] font-semibold"
+            >
+              How to share
+            </Text>
+            <ChevronRight size={14} color="#1A1210" strokeWidth={2} style={{ marginLeft: 4 }} />
+          </Pressable>
+        </View>
+      </>
+    );
+  } else {
+    // State C — 1+ published looks AND 1-9 clicks.
+    const lookWord = publishedLookCount === 1 ? 'look' : 'looks';
+    body = (
+      <>
+        <Text style={styles.numberStat} testID="performance-card-number-c">
+          {clickCount}
+        </Text>
+        <Text style={styles.title}>{clickCount === 1 ? 'click this month' : 'clicks this month'}</Text>
+        <Text style={styles.subtext}>
+          Across {publishedLookCount} published {lookWord}
+        </Text>
+        <Pressable
+          onPress={handleSeeStats}
+          className="bg-[#1A1210] rounded-full py-3 px-5 flex-row items-center justify-center active:opacity-85"
+          style={styles.ctaSpacing}
+          testID="performance-card-cta-stats"
+        >
+          <Text
+            style={{ fontFamily: 'DMSans_500Medium' }}
+            className="text-white text-[14px] font-semibold"
+          >
+            See which looks are working
+          </Text>
+          <ChevronRight size={16} color="#FFFFFF" strokeWidth={2} style={{ marginLeft: 6 }} />
+        </Pressable>
+      </>
+    );
+  }
+
+  return (
+    <View style={styles.outer} testID="performance-card">
+      <View style={styles.card}>{body}</View>
+
+      {/* "How to share" tips sheet — simple centered modal so we don't pull in
+          any new dependencies. Three concrete suggestions the creator can act
+          on inside the next 60 seconds. */}
+      <Modal
+        visible={tipsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTipsOpen(false)}
+      >
+        <Pressable style={styles.tipsBackdrop} onPress={() => setTipsOpen(false)}>
+          <Pressable style={styles.tipsCard} onPress={() => { /* swallow */ }}>
+            <View style={styles.tipsHeader}>
+              <Text style={styles.tipsTitle}>How to share</Text>
+              <Pressable
+                onPress={() => setTipsOpen(false)}
+                hitSlop={10}
+                testID="performance-card-tips-close"
+              >
+                <X size={20} color="#1A1210" strokeWidth={2} />
+              </Pressable>
+            </View>
+            <TipRow
+              n={1}
+              text="Add your profile link to your Instagram bio (link-in-bio)."
+            />
+            <TipRow
+              n={2}
+              text='Drop a look in your Story with a "Link" sticker pointing to your SiM profile.'
+            />
+            <TipRow
+              n={3}
+              text="Pin a Reel that links to your best look."
+            />
+            <Pressable
+              onPress={() => {
+                setTipsOpen(false);
+                setTimeout(() => { handleShareProfile(); }, 250);
+              }}
+              className="bg-[#1A1210] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85"
+              style={{ marginTop: 14 }}
+              testID="performance-card-tips-share"
+            >
+              <Text
+                style={{ fontFamily: 'DMSans_500Medium' }}
+                className="text-white text-[15px] font-semibold"
+              >
+                Share my profile link
+              </Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </View>
+  );
+}
+
+function TipRow({ n, text }: { n: number; text: string }) {
+  return (
+    <View style={styles.tipRow}>
+      <View style={styles.tipBadge}>
+        <Text style={styles.tipBadgeText}>{n}</Text>
+      </View>
+      <Text style={styles.tipText}>{text}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  outer: {
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  card: {
+    backgroundColor: '#FAF7F3',
+    borderColor: '#E8E0D5',
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 18,
+    minHeight: 120,
+    justifyContent: 'center',
+  },
+  numberStat: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 36,
+    color: '#1A1210',
+    lineHeight: 40,
+    marginBottom: 2,
+  },
+  title: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 20,
+    color: '#1A1210',
+    marginBottom: 6,
+  },
+  subtext: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#6B5E58',
+    lineHeight: 18,
+  },
+  ctaSpacing: {
+    marginTop: 14,
+  },
+  ctaRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  tipsBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  tipsCard: {
+    backgroundColor: '#FAF7F3',
+    borderRadius: 20,
+    padding: 22,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+  },
+  tipsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  tipsTitle: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 22,
+    color: '#1A1210',
+  },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 8,
+  },
+  tipBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#1A1210',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  tipBadgeText: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 12,
+    color: '#FFFFFF',
+  },
+  tipText: {
+    flex: 1,
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#3D3330',
+    lineHeight: 20,
+  },
+});
+
+export default PerformanceCard;

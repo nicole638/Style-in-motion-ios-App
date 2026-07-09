@@ -1,0 +1,151 @@
+import React, { useEffect, useState } from 'react';
+import { View, Text, Pressable } from 'react-native';
+import { router, Stack } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
+import { DMSans_400Regular, DMSans_500Medium, DMSans_700Bold } from '@expo-google-fonts/dm-sans';
+import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ArrowRight } from 'lucide-react-native';
+import useAuthStore from '@/lib/state/authStore';
+import { supabase } from '@/lib/supabase';
+
+// Storage key shared with the signup flow — written by creator-login.tsx
+// after `claim_referral` returns `linked: true`, consumed (and cleared) here.
+const PENDING_REFERRER_KEY = '@sim/pending_referrer_id';
+
+/**
+ * Step 1 of the "First 5 Minutes" creator activation flow.
+ * Pulls the creator's first name from authStore.creatorName so the welcome
+ * feels personal. Falls back to a generic "Welcome." with no name when the
+ * name is unavailable (e.g. account row hadn't synced yet).
+ */
+export default function OnboardingWelcomeScreen() {
+  const creatorName = useAuthStore((s) => s.creatorName);
+  const [fontsLoaded] = useFonts({
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_700Bold,
+  });
+
+  // Referrer username (only set when the user signed up through a valid
+  // referral link). Read once on mount from AsyncStorage so it doesn't bleed
+  // into future logins.
+  const [referrerUsername, setReferrerUsername] = useState<string | null>(null);
+
+  // Mark creator onboarding as entered so the tabs entry gate
+  // (app/(tabs)/_layout.tsx) won't re-route this creator back into onboarding
+  // on a future app open. Loop-safe across both entry paths: signup-success
+  // (routes straight here) and email-confirm (routed here from the tabs gate).
+  useEffect(() => {
+    AsyncStorage.setItem('styled_creator_onboarding_seen', 'true').catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const referrerId = await AsyncStorage.getItem(PENDING_REFERRER_KEY);
+        // Clear immediately so re-entering this screen doesn't re-fire the
+        // fetch and never leaks into a different account's session.
+        if (referrerId) {
+          await AsyncStorage.removeItem(PENDING_REFERRER_KEY);
+        }
+        if (!referrerId || cancelled) return;
+        const { data, error } = await supabase
+          .from('creator_profiles')
+          .select('username')
+          .eq('id', referrerId)
+          .single();
+        if (cancelled) return;
+        if (error) {
+          console.warn('[onboarding/welcome] referrer lookup failed:', error.message);
+          return;
+        }
+        const username = (data?.username ?? '').trim();
+        if (username) setReferrerUsername(username);
+      } catch (e: any) {
+        console.warn('[onboarding/welcome] referrer hydration threw:', e?.message ?? e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Pull just the first name token. signupAsCreator stores the user's name
+  // as "First" (mononym) or "First Last", so the first whitespace-delimited
+  // token is reliably the first name.
+  const firstName = (creatorName ?? '').trim().split(/\s+/)[0] ?? '';
+  const greeting = firstName.length > 0 ? `Welcome, ${firstName}.` : 'Welcome.';
+
+  const handleContinue = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    router.push('/onboarding/aesthetic' as any);
+  };
+
+  if (!fontsLoaded) {
+    return <View style={{ flex: 1, backgroundColor: '#F7F4F0' }} />;
+  }
+
+  return (
+    <SafeAreaView
+      className="flex-1 bg-[#F7F4F0]"
+      edges={['top', 'bottom']}
+      testID="onboarding-welcome-screen"
+    >
+      <Stack.Screen options={{ headerShown: false, gestureEnabled: false }} />
+
+      <View className="flex-1 px-6 justify-center">
+        <Text
+          className="text-[28px] text-[#1A1210]"
+          style={{ fontFamily: 'DMSans_700Bold', lineHeight: 34 }}
+          testID="onboarding-welcome-title"
+        >
+          {greeting}
+        </Text>
+        {referrerUsername ? (
+          <Text
+            className="text-[14px] text-[#B87063] mt-3"
+            style={{ fontFamily: 'DMSans_500Medium', lineHeight: 20 }}
+            testID="onboarding-welcome-referrer"
+          >
+            Invited by @{referrerUsername} 🤝
+          </Text>
+        ) : null}
+        <Text
+          className="text-[16px] text-[#6B5E58] mt-4"
+          style={{ fontFamily: 'DMSans_400Regular', lineHeight: 24 }}
+          testID="onboarding-welcome-body"
+        >
+          Building your first look should take 5 minutes, not 5 days. We
+          pre-loaded a few pieces to style.
+        </Text>
+      </View>
+
+      <View className="px-6 pb-4">
+        <Pressable
+          onPress={handleContinue}
+          className="bg-[#B87063] rounded-full flex-row items-center justify-center active:opacity-85"
+          style={{
+            height: 52,
+            shadowColor: '#1A1210',
+            shadowOpacity: 0.12,
+            shadowRadius: 8,
+            shadowOffset: { width: 0, height: 2 },
+            elevation: 2,
+          }}
+          testID="onboarding-welcome-cta"
+        >
+          <Text
+            className="text-white text-[15px]"
+            style={{ fontFamily: 'DMSans_500Medium' }}
+          >
+            Let{`'`}s go
+          </Text>
+          <ArrowRight size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}

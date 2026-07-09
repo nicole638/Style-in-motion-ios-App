@@ -1,0 +1,200 @@
+import React, { useState, useCallback } from 'react';
+import { View, Text, Pressable, ScrollView, ActivityIndicator } from 'react-native';
+import { router, Stack } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
+import { DMSans_400Regular, DMSans_500Medium, DMSans_700Bold } from '@expo-google-fonts/dm-sans';
+import * as Haptics from 'expo-haptics';
+import { ArrowLeft, ArrowRight } from 'lucide-react-native';
+import useFirstLookStore from '@/lib/state/firstLookStore';
+import useAuthStore from '@/lib/state/authStore';
+import { supabase } from '@/lib/supabase';
+
+const AESTHETIC_TAGS: string[] = [
+  'coquette',
+  'minimalist',
+  'streetwear',
+  'classic',
+  'y2k',
+  'clean girl',
+  'cottagecore',
+  'old money',
+];
+
+/**
+ * Step 2 of the "First 5 Minutes" creator activation flow.
+ * Pick 1–3 aesthetic tags that shape the starter looks. Selection is
+ * persisted via firstLookStore so /onboarding/pick-three and
+ * /collage-builder can read it back.
+ *
+ * On continue we ALSO seed the creator's closet with aesthetic-matched,
+ * affiliate-wrapped starter pieces (seed_starter_pack). This is the point in
+ * the flow where the creator is reliably authenticated AND we know their
+ * aesthetics — unlike the old signup-time call, which never ran for the
+ * (majority) email-confirmation signups. Idempotent + best-effort: we route
+ * onward regardless of the seed result so the creator is never blocked.
+ */
+export default function OnboardingAestheticScreen() {
+  const setAestheticTags = useFirstLookStore((s) => s.setAestheticTags);
+  const creatorId = useAuthStore((s) => s.creatorId);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [seeding, setSeeding] = useState<boolean>(false);
+
+  const [fontsLoaded] = useFonts({
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_700Bold,
+  });
+
+  const toggleTag = useCallback((tag: string) => {
+    setSelected((prev) => {
+      if (prev.includes(tag)) {
+        Haptics.selectionAsync().catch(() => {});
+        return prev.filter((t) => t !== tag);
+      }
+      if (prev.length >= 3) {
+        // Cap at 3 — buzz to acknowledge the tap without changing state.
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        return prev;
+      }
+      Haptics.selectionAsync().catch(() => {});
+      return [...prev, tag];
+    });
+  }, []);
+
+  const handleContinue = useCallback(async () => {
+    if (seeding) return;
+    // Default to ['minimalist'] silently if the user picked nothing — we want
+    // the starter look generator to always have something to anchor on.
+    const final = selected.length === 0 ? ['minimalist'] : selected;
+    setAestheticTags(final);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+    // Seed the closet with aesthetic-matched, affiliate-wrapped starter pieces
+    // so /onboarding/pick-three has items to show. Idempotent (no-ops if the
+    // creator already has starter items). Best-effort — route regardless.
+    if (creatorId) {
+      setSeeding(true);
+      try {
+        const { error } = await supabase.rpc('seed_starter_pack', {
+          p_creator_id: creatorId,
+          p_aesthetics: final,
+        });
+        if (error) {
+          console.warn('[onboarding/aesthetic] seed_starter_pack failed:', error.message);
+        }
+      } catch (e: any) {
+        console.warn('[onboarding/aesthetic] seed_starter_pack threw:', e?.message ?? e);
+      } finally {
+        setSeeding(false);
+      }
+    }
+
+    router.push('/onboarding/pick-three' as any);
+  }, [seeding, selected, setAestheticTags, creatorId]);
+
+  if (!fontsLoaded) {
+    return <View style={{ flex: 1, backgroundColor: '#F7F4F0' }} />;
+  }
+
+  return (
+    <SafeAreaView
+      className="flex-1 bg-[#F7F4F0]"
+      edges={['top', 'bottom']}
+      testID="onboarding-aesthetic-screen"
+    >
+      <Stack.Screen options={{ headerShown: false, gestureEnabled: false }} />
+
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 24 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <Pressable
+          onPress={() => router.back()}
+          className="w-10 h-10 rounded-full bg-white items-center justify-center mb-5 active:opacity-80"
+          style={{ shadowColor: '#1A1210', shadowOpacity: 0.06, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } }}
+          hitSlop={8}
+          testID="onboarding-aesthetic-back"
+        >
+          <ArrowLeft size={20} color="#1A1210" />
+        </Pressable>
+        <Text
+          className="text-[28px] text-[#1A1210]"
+          style={{ fontFamily: 'DMSans_700Bold', lineHeight: 34 }}
+          testID="onboarding-aesthetic-title"
+        >
+          Pick your aesthetic
+        </Text>
+        <Text
+          className="text-[16px] text-[#6B5E58] mt-2"
+          style={{ fontFamily: 'DMSans_400Regular', lineHeight: 22 }}
+          testID="onboarding-aesthetic-subtitle"
+        >
+          Tap up to 3. We{`'`}ll use these to shape your starter looks.
+        </Text>
+
+        <View className="flex-row flex-wrap mt-8" style={{ gap: 10 }}>
+          {AESTHETIC_TAGS.map((tag) => {
+            const isSelected = selected.includes(tag);
+            return (
+              <Pressable
+                key={tag}
+                onPress={() => toggleTag(tag)}
+                className={
+                  isSelected
+                    ? 'bg-[#B87063] rounded-full px-4 py-2.5 active:opacity-85'
+                    : 'bg-white rounded-full px-4 py-2.5 border-[1.5px] border-[#1A1210] active:opacity-85'
+                }
+                testID={`aesthetic-chip-${tag.replace(/\s+/g, '-')}`}
+              >
+                <Text
+                  className={
+                    isSelected
+                      ? 'text-white text-[14px]'
+                      : 'text-[#1A1210] text-[14px]'
+                  }
+                  style={{ fontFamily: 'DMSans_500Medium' }}
+                >
+                  {tag}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </ScrollView>
+
+      <View className="px-6 pb-4">
+        <Pressable
+          onPress={handleContinue}
+          disabled={seeding}
+          className="bg-[#B87063] rounded-full flex-row items-center justify-center active:opacity-85"
+          style={{
+            height: 52,
+            opacity: seeding ? 0.85 : 1,
+            shadowColor: '#1A1210',
+            shadowOpacity: 0.12,
+            shadowRadius: 8,
+            shadowOffset: { width: 0, height: 2 },
+            elevation: 2,
+          }}
+          testID="onboarding-aesthetic-continue"
+        >
+          {seeding ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <>
+              <Text
+                className="text-white text-[15px]"
+                style={{ fontFamily: 'DMSans_500Medium' }}
+              >
+                Continue
+              </Text>
+              <ArrowRight size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
+            </>
+          )}
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}

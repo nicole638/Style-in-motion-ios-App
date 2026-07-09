@@ -1,0 +1,154 @@
+{
+  "expo": {
+    "name": "Styled.in.motion",
+    "slug": "styled-in-motion",
+    "scheme": "styledinmotion",
+    "version": "5.5",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Styled.in.motion uses the camera to capture photos inside the app before you publish them.",
+        "NSPhotoLibraryUsageDescription": "Styled.in.motion accesses your photo library so you can move media between the app and your library.",
+        "NSPhotoLibraryAddUsageDescription": "Styled.in.motion saves media you export from the app into your photo library.",
+        "NSLocationWhenInUseUsageDescription": "Styled.in.motion uses your location to show nearby content and services while you use the app.",
+        "LSApplicationQueriesSchemes": [
+          "instagram",
+          "instagram-stories",
+          "tiktok",
+          "tiktokopensdk",
+          "tiktoksharesdk",
+          "snssdk1233"
+        ],
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLName": "tiktok",
+            "CFBundleURLSchemes": [
+              "tiktokopensdksbawoeu1u0o2strxye"
+            ]
+          },
+          {
+            "CFBundleURLName": "styledinmotion",
+            "CFBundleURLSchemes": [
+              "styledinmotion"
+            ]
+          }
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.vibecode.styled.in.motion-c77kcu",
+      "buildNumber": "33",
+      "associatedDomains": [
+        "applinks:app.styledinmotion.app"
+      ],
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.studio.styledinmotion"
+        ]
+      }
+    },
+    "android": {
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_MEDIA_AUDIO"
+      ],
+      "package": "studio.styledinmotion.app",
+      "versionCode": 1,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "app.styledinmotion.app"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./adaptive-icon.png",
+        "backgroundColor": "#F2EDDC"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "./plugins/withTikTokSDK",
+        {
+          "clientKey": "sbawoeu1u0o2strxye"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Styled.in.motion accesses your photo library so you can pick outfit photos and closet items to add to your looks."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Styled.in.motion accesses your photo library so you can pick outfit photos and closet items to add to your looks.",
+          "savePhotosPermission": "Styled.in.motion saves looks and closet items you export to your photo library.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      "./plugins/withSimSharedDefaults",
+      [
+        "./plugins/withShareExtension",
+        {
+          "appGroup": "group.studio.styledinmotion",
+          "tokenKey": "sim_share_token",
+          "bundleIdentifier": "com.vibecode.styled.in.motion-c77kcu.share",
+          "supabaseUrl": "https://rghlcnrttvlvphzahudf.supabase.co",
+          "functionPath": "/functions/v1/share-add-item",
+          "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJnaGxjbnJ0dHZsdnBoemFodWRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MTc5NDIsImV4cCI6MjA5MTA5Mzk0Mn0.PlnMZUtd894pnb_ddx0Rp1T0IGOOKJTFqA6fFq5Bt9s",
+          "deploymentTarget": "15.1"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "icon": "./icon.png",
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "88f99d01-2dba-4ece-8fa4-0a998b84c86b",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "ShareExtension",
+                  "bundleIdentifier": "com.vibecode.styled.in.motion-c77kcu.share",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.studio.styledinmotion"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "owner": "styledinmotion"
+  }
+}

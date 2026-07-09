@@ -1,0 +1,185 @@
+import React, { useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
+import { DMSans_400Regular, DMSans_500Medium, DMSans_700Bold } from '@expo-google-fonts/dm-sans';
+import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ChevronLeft } from 'lucide-react-native';
+import useAuthStore from '@/lib/state/authStore';
+import useProfileStore from '@/lib/state/profileStore';
+import useCreatorStore from '@/lib/state/creatorStore';
+
+/**
+ * In-app email verification (6-digit OTP). Reached from BOTH creator-login and
+ * public-signup (shopper) when signup returns 'confirm_email'. Replaces the
+ * email-confirmation LINK (which can't redirect back into the App Store build /
+ * a web signup) with a code the user types here. On success we have a real
+ * session → routed by account type (audience → shopper shell, creator → golden
+ * path). Requires the Supabase "Confirm signup" email template to emit
+ * {{ .Token }}.
+ */
+export default function VerifyEmailScreen() {
+  const { email: emailParam } = useLocalSearchParams<{ email?: string }>();
+  const email = (typeof emailParam === 'string' ? emailParam : '').trim();
+
+  const verifySignupOtp = useAuthStore((s) => s.verifySignupOtp);
+  const resendSignupOtp = useAuthStore((s) => s.resendSignupOtp);
+
+  const [code, setCode] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const [fontsLoaded] = useFonts({ DMSans_400Regular, DMSans_500Medium, DMSans_700Bold });
+
+  const canVerify = code.trim().length === 6 && !verifying;
+
+  const handleVerify = useCallback(async () => {
+    if (!canVerify) return;
+    setError('');
+    setNotice('');
+    setVerifying(true);
+    const result = await verifySignupOtp(email, code.trim());
+    setVerifying(false);
+    if (result === 'success') {
+      AsyncStorage.removeItem('@sim/pending_verify_email').catch(() => {});
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      // Route by the verified account's real type. Audience → shopper shell;
+      // creator → creator golden path. Never send an audience user into creator
+      // onboarding (separation rule 2).
+      if (useAuthStore.getState().userType === 'audience') {
+        router.replace('/(public-tabs)/feed' as any);
+        return;
+      }
+      const creatorId = useAuthStore.getState().creatorId;
+      if (creatorId) {
+        useProfileStore.getState().switchCreator(creatorId);
+        const creatorName = useAuthStore.getState().creatorName;
+        if (!useProfileStore.getState().username && creatorName) {
+          useProfileStore.getState().setUsername(creatorName);
+        }
+        useCreatorStore.getState().switchCreator(creatorId);
+      }
+      router.replace('/onboarding/welcome' as any);
+      return;
+    }
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+    if (result === 'expired') {
+      setError('That code expired. Tap “Resend code” for a new one.');
+    } else if (result === 'invalid_code') {
+      setError('That code isn’t right. Double-check and try again.');
+    } else {
+      setError('Couldn’t verify. Please try again in a moment.');
+    }
+  }, [canVerify, email, code, verifySignupOtp]);
+
+  const handleResend = useCallback(async () => {
+    if (resending) return;
+    setError('');
+    setNotice('');
+    setResending(true);
+    const ok = await resendSignupOtp(email);
+    setResending(false);
+    if (ok) {
+      setNotice('New code sent — check your email.');
+      Haptics.selectionAsync().catch(() => {});
+    } else {
+      setError('Couldn’t resend right now. Try again shortly.');
+    }
+  }, [resending, email, resendSignupOtp]);
+
+  if (!fontsLoaded) {
+    return <View style={{ flex: 1, backgroundColor: '#F7F4F0' }} />;
+  }
+
+  return (
+    <SafeAreaView className="flex-1 bg-[#F7F4F0]" edges={['top', 'bottom']} testID="verify-email-screen">
+      <Stack.Screen options={{ headerShown: false }} />
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <View className="px-6 pt-2">
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={8}
+            className="w-10 h-10 rounded-full bg-white items-center justify-center active:opacity-80"
+            style={{ shadowColor: '#1A1210', shadowOpacity: 0.06, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } }}
+            testID="verify-back"
+          >
+            <ChevronLeft size={22} color="#1A1210" />
+          </Pressable>
+        </View>
+
+        <View className="flex-1 px-6 justify-center">
+          <Text className="text-[28px] text-[#1A1210]" style={{ fontFamily: 'DMSans_700Bold', lineHeight: 34 }}>
+            Verify your email
+          </Text>
+          <Text className="text-[16px] text-[#6B5E58] mt-3" style={{ fontFamily: 'DMSans_400Regular', lineHeight: 24 }}>
+            Enter the 6-digit code we sent to {email ? email : 'your email'}.
+          </Text>
+
+          <TextInput
+            value={code}
+            onChangeText={(t) => setCode(t.replace(/[^0-9]/g, '').slice(0, 6))}
+            keyboardType="number-pad"
+            maxLength={6}
+            placeholder="······"
+            placeholderTextColor="#C7BBB2"
+            autoFocus
+            className="bg-white rounded-2xl mt-8 text-center"
+            style={{ fontFamily: 'DMSans_700Bold', fontSize: 30, letterSpacing: 10, color: '#1A1210', paddingVertical: 18, borderWidth: 1.5, borderColor: '#E8E0D8' }}
+            testID="verify-code-input"
+          />
+
+          {error ? (
+            <Text className="text-[#C7302B] text-[14px] mt-4" style={{ fontFamily: 'DMSans_500Medium' }} testID="verify-error">
+              {error}
+            </Text>
+          ) : null}
+          {notice ? (
+            <Text className="text-[#2E7D52] text-[14px] mt-4" style={{ fontFamily: 'DMSans_500Medium' }} testID="verify-notice">
+              {notice}
+            </Text>
+          ) : null}
+
+          <Pressable onPress={handleResend} disabled={resending} className="mt-5 active:opacity-70" testID="verify-resend">
+            <Text className="text-[#B87063] text-[14px]" style={{ fontFamily: 'DMSans_500Medium' }}>
+              {resending ? 'Sending…' : 'Resend code'}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View className="px-6 pb-4">
+          <Pressable
+            onPress={handleVerify}
+            disabled={!canVerify}
+            className={
+              canVerify
+                ? 'bg-[#B87063] rounded-full items-center justify-center active:opacity-85'
+                : 'bg-[#D5CDC7] rounded-full items-center justify-center'
+            }
+            style={{ height: 52 }}
+            testID="verify-submit"
+          >
+            {verifying ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text className={canVerify ? 'text-white text-[15px]' : 'text-[#6B5E58] text-[15px]'} style={{ fontFamily: 'DMSans_500Medium' }}>
+                Verify
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}

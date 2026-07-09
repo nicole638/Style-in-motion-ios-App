@@ -1,0 +1,453 @@
+import { create } from 'zustand';
+import { router } from 'expo-router';
+import { supabase } from '@/lib/supabase';
+import useLikeStore from '@/lib/state/likeStore';
+import useContextStore from '@/lib/state/contextStore';
+import useFollowStore from '@/lib/state/followStore';
+import useSavedItemsStore from '@/lib/state/savedItemsStore';
+import useSavedLooksStore from '@/lib/state/savedLooksStore';
+import {
+  mapSignupError,
+  mapLoginError,
+  type SignupOutcome,
+  type LoginOutcome,
+} from '@/lib/utils/mapAuthError';
+
+interface AuthState {
+  userType: 'creator' | 'audience' | null;
+  isLoggedIn: boolean;
+  creatorId: string | null;
+  creatorName: string | null;
+  publicUser: { name: string; email: string } | null;
+  _hasHydrated: boolean;
+  initialize: () => Promise<void>;
+  signupAsPublic: (firstName: string, lastName: string, email: string, password: string) => Promise<'success' | 'invalid_name' | 'confirm_email' | SignupOutcome>;
+  signupAsCreator: (firstName: string, lastName: string, email: string, password: string) => Promise<'success' | 'invalid_name' | 'confirm_email' | SignupOutcome>;
+  loginAsPublic: (email: string, password: string) => Promise<'success' | LoginOutcome>;
+  login: (email: string, password: string) => Promise<'success' | LoginOutcome>;
+  // Promote the currently-signed-in audience user to a creator. Carries
+  // first/last name from audience_accounts (falling back to user_metadata)
+  // so we never insert nulls into public.creators, updates the JWT's
+  // user_type claim to 'creator', and refreshes the session so the in-app
+  // token reflects the new claim immediately (otherwise route guards
+  // bounce the user back to the audience surfaces).
+  promoteToCreator: () => Promise<{ success: boolean; error?: string }>;
+  logout: () => Promise<void>;
+  deleteAccount: () => Promise<{ success: boolean; error?: string }>;
+}
+
+const useAuthStore = create<AuthState>()((set) => ({
+  userType: null,
+  isLoggedIn: false,
+  creatorId: null,
+  creatorName: null,
+  publicUser: null,
+  _hasHydrated: false,
+
+  initialize: async () => {
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      // A stale/expired refresh token produces an AuthApiError here.
+      // Sign out silently so the bad token is wiped from AsyncStorage.
+      if (error) {
+        await supabase.auth.signOut();
+        set({ _hasHydrated: true });
+        return;
+      }
+      if (session?.user) {
+        const user = session.user;
+        const userType = user.user_metadata?.user_type as 'creator' | 'audience' | undefined;
+        const name = user.user_metadata?.name as string | undefined;
+        if (userType === 'creator') {
+          set({ isLoggedIn: true, userType: 'creator', creatorId: user.id, creatorName: name ?? null, _hasHydrated: true });
+          useLikeStore.getState().syncLikedIds(user.id).catch(() => {});
+          useFollowStore.getState().hydrate(user.id).catch(() => {});
+          useSavedItemsStore.getState().hydrate(user.id).catch(() => {});
+          useSavedLooksStore.getState().hydrate(user.id).catch(() => {});
+          // Hydrate storefront context: remembers the auth uid as the
+          // "personal" id and prefetches any brand memberships the user has.
+          // Default mode='personal' on every session — no last-context-used.
+          useContextStore.getState().setPersonalCreatorId(user.id);
+          useContextStore.getState().loadMemberships(user.id).catch(() => {});
+        } else if (userType === 'audience') {
+          set({ isLoggedIn: true, userType: 'audience', publicUser: { name: name ?? '', email: user.email ?? '' }, _hasHydrated: true });
+          useLikeStore.getState().syncLikedIds(user.id).catch(() => {});
+          useFollowStore.getState().hydrate(user.id).catch(() => {});
+          useSavedItemsStore.getState().hydrate(user.id).catch(() => {});
+          useSavedLooksStore.getState().hydrate(user.id).catch(() => {});
+        } else {
+          set({ _hasHydrated: true });
+        }
+      } else {
+        set({ _hasHydrated: true });
+      }
+    } catch {
+      // Any unexpected error (e.g. network offline) — sign out defensively
+      // so a corrupted token doesn't leave the user stuck on a blank screen.
+      try { await supabase.auth.signOut(); } catch { /* ignore */ }
+      set({ _hasHydrated: true });
+    }
+  },
+
+  signupAsPublic: async (firstName, lastName, email, password) => {
+    try {
+      // First name is required. Last name is optional (many creators are
+      // mononyms — Latoya, Sylvia, Megan, Kerri, ReillyRose_Styles). Persist
+      // an empty last name as NULL so DB triggers don't read "" as a value.
+      const trimmedFirst = firstName.trim();
+      const trimmedLast = lastName.trim();
+      if (!trimmedFirst) {
+        return 'invalid_name';
+      }
+      const lastOrNull: string | null = trimmedLast.length > 0 ? trimmedLast : null;
+      const name = trimmedLast.length > 0 ? `${trimmedFirst} ${trimmedLast}` : trimmedFirst;
+      const metadata = {
+        name,
+        first_name: trimmedFirst,
+        last_name: lastOrNull,
+        user_type: 'audience' as const,
+      };
+      console.log('[auth] signupAsPublic invoked', {
+        emailDomain: email.split('@')[1] ?? 'unknown'
+      });
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: metadata,
+          emailRedirectTo: 'styledinmotion://auth/confirm',
+        },
+      });
+      if (error) {
+        return mapSignupError(error);
+      }
+      if (data.user) {
+        // If session is null, email confirmation is required — attempt sign-in anyway
+        if (!data.session) {
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+          if (signInError || !signInData.session) {
+            // Email confirmation is enabled and the user must confirm first
+            return 'confirm_email';
+          }
+          await supabase.from('audience_accounts').insert({ id: data.user.id, email, name, first_name: trimmedFirst, last_name: lastOrNull });
+          set({ isLoggedIn: true, userType: 'audience', publicUser: { name, email } });
+          return 'success';
+        }
+        await supabase.from('audience_accounts').insert({ id: data.user.id, email, name, first_name: trimmedFirst, last_name: lastOrNull });
+        set({ isLoggedIn: true, userType: 'audience', publicUser: { name, email } });
+      }
+      return 'success';
+    } catch (e) {
+      console.error('[auth] signupAsPublic exception:', e);
+      return mapSignupError(e);
+    }
+  },
+
+  signupAsCreator: async (firstName, lastName, email, password) => {
+    try {
+      // First name is required; last name is optional (mononyms are common).
+      const trimmedFirst = firstName.trim();
+      const trimmedLast = lastName.trim();
+      if (!trimmedFirst) {
+        return 'invalid_name';
+      }
+      const lastOrNull: string | null = trimmedLast.length > 0 ? trimmedLast : null;
+      const name = trimmedLast.length > 0 ? `${trimmedFirst} ${trimmedLast}` : trimmedFirst;
+      const metadata = {
+        name,
+        first_name: trimmedFirst,
+        last_name: lastOrNull,
+        user_type: 'creator' as const,
+      };
+      console.log('[auth] signupAsCreator invoked', {
+        emailDomain: email.split('@')[1] ?? 'unknown'
+      });
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: metadata,
+          emailRedirectTo: 'styledinmotion://auth/confirm',
+        },
+      });
+      if (error) {
+        console.error('[signupAsCreator] supabase error:', error.message, (error as any).status, JSON.stringify(error));
+        return mapSignupError(error);
+      }
+      if (data.user) {
+        // If session is null, email confirmation is required — attempt sign-in anyway
+        if (!data.session) {
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+          if (signInError || !signInData.session) {
+            // Email confirmation is enabled and the user must confirm first
+            return 'confirm_email';
+          }
+          await supabase.from('creators').insert({ id: data.user.id, email, name, first_name: trimmedFirst, last_name: lastOrNull });
+          await supabase.from('creator_profiles').insert({ creator_id: data.user.id, username: name, first_name: trimmedFirst, last_name: lastOrNull });
+          set({ isLoggedIn: true, userType: 'creator', creatorId: data.user.id, creatorName: name });
+          useContextStore.getState().setPersonalCreatorId(data.user.id);
+          // Brand-new creator — no memberships expected, but a call is cheap
+          // and keeps the membership-loading state consistent across flows.
+          useContextStore.getState().loadMemberships(data.user.id).catch(() => {});
+          return 'success';
+        }
+        await supabase.from('creators').insert({ id: data.user.id, email, name, first_name: trimmedFirst, last_name: lastOrNull });
+        await supabase.from('creator_profiles').insert({ creator_id: data.user.id, username: name, first_name: trimmedFirst, last_name: lastOrNull });
+        set({ isLoggedIn: true, userType: 'creator', creatorId: data.user.id, creatorName: name });
+        useContextStore.getState().setPersonalCreatorId(data.user.id);
+        useContextStore.getState().loadMemberships(data.user.id).catch(() => {});
+        useLikeStore.getState().syncLikedIds(data.user.id).catch(() => {});
+        useFollowStore.getState().hydrate(data.user.id).catch(() => {});
+        useSavedItemsStore.getState().hydrate(data.user.id).catch(() => {});
+        useSavedLooksStore.getState().hydrate(data.user.id).catch(() => {});
+      }
+      return 'success';
+    } catch (e) {
+      console.error('[auth] signupAsCreator exception:', e);
+      return mapSignupError(e);
+    }
+  },
+
+  loginAsPublic: async (email, password) => {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        return mapLoginError(error);
+      }
+      if (data.user) {
+        const userType = data.user.user_metadata?.user_type;
+        if (userType !== 'audience') return 'wrong_account_type';
+        const name = data.user.user_metadata?.name ?? '';
+        set({ isLoggedIn: true, userType: 'audience', publicUser: { name, email } });
+        useLikeStore.getState().syncLikedIds(data.user.id).catch(() => {});
+        useFollowStore.getState().hydrate(data.user.id).catch(() => {});
+        useSavedItemsStore.getState().hydrate(data.user.id).catch(() => {});
+        useSavedLooksStore.getState().hydrate(data.user.id).catch(() => {});
+      }
+      return 'success';
+    } catch (e) {
+      console.error('[auth] loginAsPublic exception:', e);
+      return mapLoginError(e);
+    }
+  },
+
+  login: async (email, password) => {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        return mapLoginError(error);
+      }
+      if (data.user) {
+        const userType = data.user.user_metadata?.user_type;
+        if (userType !== 'creator') return 'wrong_account_type';
+        const name = data.user.user_metadata?.name ?? '';
+        // Ensure creators row exists (handles accounts created before this fix)
+        await supabase.from('creators').upsert(
+          { id: data.user.id, email: data.user.email ?? '', name },
+          { onConflict: 'id' }
+        );
+        set({ isLoggedIn: true, userType: 'creator', creatorId: data.user.id, creatorName: name });
+        // Same hydration the initialize path does — keeps switcher and
+        // RLS-aligned writes ready before the user reaches Home.
+        useContextStore.getState().setPersonalCreatorId(data.user.id);
+        useContextStore.getState().loadMemberships(data.user.id).catch(() => {});
+        useFollowStore.getState().hydrate(data.user.id).catch(() => {});
+        useSavedItemsStore.getState().hydrate(data.user.id).catch(() => {});
+        useSavedLooksStore.getState().hydrate(data.user.id).catch(() => {});
+      }
+      return 'success';
+    } catch (e) {
+      console.error('[auth] login exception:', e);
+      return mapLoginError(e);
+    }
+  },
+
+  promoteToCreator: async () => {
+    // Audience users who decide to become creators must NOT end up with a
+    // creators row missing first_name (which is what produced the original
+    // sign-in bounce loop) and their JWT must say user_type='creator' so the
+    // route guards stop sending them back to the audience tabs.
+    try {
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !session?.user) {
+        return { success: false, error: 'No active session — please sign in again.' };
+      }
+      const user = session.user;
+
+      // Pull first/last from audience_accounts first (source of truth that
+      // we know was populated at signup); fall back to user_metadata.
+      let firstName: string | null = null;
+      let lastName: string | null = null;
+      try {
+        const { data: audience } = await supabase
+          .from('audience_accounts')
+          .select('first_name, last_name')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (audience) {
+          const af = (audience as any).first_name as string | null | undefined;
+          const al = (audience as any).last_name as string | null | undefined;
+          if (af && af.trim()) firstName = af.trim();
+          if (al && al.trim()) lastName = al.trim();
+        }
+      } catch (e) {
+        console.warn('[promoteToCreator] audience_accounts lookup failed:', e);
+      }
+      if (!firstName) {
+        const metaFirst = (user.user_metadata?.first_name as string | undefined)?.trim();
+        if (metaFirst) firstName = metaFirst;
+      }
+      if (!lastName) {
+        const metaLast = (user.user_metadata?.last_name as string | undefined)?.trim();
+        if (metaLast) lastName = metaLast;
+      }
+      // Final fallback so we never write a null first_name into creators.
+      if (!firstName) {
+        const metaName = (user.user_metadata?.name as string | undefined)?.trim();
+        if (metaName) {
+          const parts = metaName.split(/\s+/);
+          firstName = parts[0] ?? null;
+          if (!lastName && parts.length > 1) {
+            lastName = parts.slice(1).join(' ');
+          }
+        }
+      }
+      if (!firstName) {
+        return { success: false, error: 'Missing first name — please update your profile before becoming a creator.' };
+      }
+
+      const name = lastName ? `${firstName} ${lastName}` : firstName;
+
+      // Upsert into creators carrying the name fields (NOT nulls).
+      const { error: creatorsError } = await supabase
+        .from('creators')
+        .upsert(
+          { id: user.id, email: user.email ?? '', name, first_name: firstName, last_name: lastName },
+          { onConflict: 'id' }
+        );
+      if (creatorsError) {
+        console.error('[promoteToCreator] creators upsert error:', creatorsError);
+        return { success: false, error: creatorsError.message };
+      }
+
+      // Ensure a creator_profiles row exists too.
+      const { error: profileError } = await supabase
+        .from('creator_profiles')
+        .upsert(
+          { creator_id: user.id, username: name, first_name: firstName, last_name: lastName },
+          { onConflict: 'creator_id' }
+        );
+      if (profileError) {
+        console.warn('[promoteToCreator] creator_profiles upsert error:', profileError);
+        // Non-fatal — DB triggers may also seed this row.
+      }
+
+      // Flip the JWT claim. updateUser merges into raw_user_meta_data.
+      const { error: updateError } = await supabase.auth.updateUser({
+        data: { user_type: 'creator', first_name: firstName, last_name: lastName, name },
+      });
+      if (updateError) {
+        console.error('[promoteToCreator] updateUser error:', updateError);
+        return { success: false, error: updateError.message };
+      }
+
+      // Refresh so the in-app session carries the new user_type claim.
+      // Without this the next route guard read still sees user_type='audience'
+      // and bounces the user back to the audience tabs.
+      const { error: refreshError } = await supabase.auth.refreshSession();
+      if (refreshError) {
+        console.warn('[promoteToCreator] refreshSession warning:', refreshError);
+      }
+
+      set({
+        isLoggedIn: true,
+        userType: 'creator',
+        creatorId: user.id,
+        creatorName: name,
+        publicUser: null,
+      });
+      useContextStore.getState().setPersonalCreatorId(user.id);
+      useContextStore.getState().loadMemberships(user.id).catch(() => {});
+      useLikeStore.getState().syncLikedIds(user.id).catch(() => {});
+      useFollowStore.getState().hydrate(user.id).catch(() => {});
+      useSavedItemsStore.getState().hydrate(user.id).catch(() => {});
+      useSavedLooksStore.getState().hydrate(user.id).catch(() => {});
+      return { success: true };
+    } catch (err: any) {
+      console.error('[promoteToCreator] caught exception:', err?.message || err);
+      return { success: false, error: err?.message ?? 'Failed to become a creator.' };
+    }
+  },
+
+  logout: async () => {
+    await supabase.auth.signOut();
+    set({ isLoggedIn: false, userType: null, creatorId: null, creatorName: null, publicUser: null });
+    useContextStore.getState().clear();
+    useFollowStore.getState().clear();
+    useSavedItemsStore.getState().clear();
+    useSavedLooksStore.getState().clear();
+  },
+
+  deleteAccount: async () => {
+    // The `delete-account` edge function is the source of truth: it validates
+    // the JWT internally (verify_jwt=false to bypass the ES256 key issue),
+    // deletes storage files, then calls admin.deleteUser which cascades
+    // through creators/audience_accounts/looks/items via ON DELETE CASCADE.
+    let invokeError: string | null = null;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        // No session — nothing to delete remotely. Fall through to local cleanup.
+      } else {
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('delete-account timed out')), 30000)
+        );
+        const result = await Promise.race([
+          supabase.functions.invoke('delete-account', { body: {} }),
+          timeout,
+        ]);
+        if (result && 'error' in result && result.error) {
+          invokeError = result.error.message ?? 'Edge function error';
+          console.warn('[delete-account] edge function error:', result.error);
+        }
+      }
+    } catch (err: any) {
+      invokeError = err?.message ?? 'Failed to delete account';
+      console.warn('[delete-account] failed:', err);
+    } finally {
+      // Use scope: 'local' — after the edge function deletes auth.users, the
+      // default signOut() call to /logout with the now-invalid access token
+      // returns 403 and can stall. Local scope just clears AsyncStorage.
+      try { await supabase.auth.signOut({ scope: 'local' }); } catch { /* ignore */ }
+      set({ isLoggedIn: false, userType: null, creatorId: null, creatorName: null, publicUser: null });
+      useContextStore.getState().clear();
+    useFollowStore.getState().clear();
+    useSavedItemsStore.getState().clear();
+    useSavedLooksStore.getState().clear();
+      // Explicit nav — onAuthStateChange doesn't fire for scope:'local' signOut,
+      // so the root index redirect never kicks in on its own.
+      try { router.replace('/welcome'); } catch (e) { console.warn('[delete-account] router.replace failed:', e); }
+    }
+    return invokeError ? { success: false, error: invokeError } : { success: true };
+  },
+}));
+
+// Persistent listener: when Supabase's native auto-refresh fails (e.g. stale/revoked
+// refresh token), it fires SIGNED_OUT so we clear local state cleanly.
+supabase.auth.onAuthStateChange((event) => {
+  if (event === 'SIGNED_OUT') {
+    useAuthStore.setState({
+      isLoggedIn: false,
+      userType: null,
+      creatorId: null,
+      creatorName: null,
+      publicUser: null,
+    });
+    useContextStore.getState().clear();
+    useFollowStore.getState().clear();
+    useSavedItemsStore.getState().clear();
+    useSavedLooksStore.getState().clear();
+  }
+});
+
+export default useAuthStore;

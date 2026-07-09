@@ -1,0 +1,3 @@
+- [Shopper account_type dual meaning](shopper-account-type-dual-meaning.md) — "shopper" = audience persona AND creators.account_type='shopper' closet; don't conflate
+- [OTP email template requires token](otp-email-template-requires-token.md) — in-app 6-digit signup verify silently breaks unless Supabase Confirm-signup template emits {{ .Token }}
+- [app.json slug/owner canonical](appjson-slug-owner-canonical.md) — keep slug/owner=styledinmotion; reverts are platform-side (no in-repo generator), also doubles iOS arrays

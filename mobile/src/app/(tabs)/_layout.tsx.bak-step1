@@ -1,0 +1,198 @@
+import { useState, useEffect } from 'react';
+import { Platform } from 'react-native';
+import { withLayoutContext } from 'expo-router';
+import { Tabs } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import CreatorOnboarding from '@/components/CreatorOnboarding';
+import RequiredUsernameSheet from '@/components/RequiredUsernameSheet';
+import useAuthStore from '@/lib/state/authStore';
+import useProfileStore from '@/lib/state/profileStore';
+
+let CreatorTabs: any;
+
+try {
+  const { createNativeBottomTabNavigator } = require('@bottom-tabs/react-navigation');
+  const { Navigator } = createNativeBottomTabNavigator();
+  CreatorTabs = withLayoutContext(Navigator);
+} catch {
+  CreatorTabs = null;
+}
+
+const isWeb = Platform.OS === 'web' || !CreatorTabs;
+
+const ONBOARDING_KEY = 'styled_creator_onboarding_seen';
+
+export default function TabLayout() {
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
+  const [showRequiredUsername, setShowRequiredUsername] = useState<boolean>(false);
+  const creatorId = useAuthStore((s) => s.creatorId);
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
+  const username = useProfileStore((s) => s.username);
+  const fetchProfile = useProfileStore((s) => s.fetchProfile);
+
+  useEffect(() => {
+    AsyncStorage.getItem(ONBOARDING_KEY).then((val) => {
+      if (!val) {
+        setShowOnboarding(true);
+      }
+    });
+  }, []);
+
+  // Legacy NULL-username gate. When a signed-in creator has no username,
+  // force the required-username sheet so they can't keep using the app
+  // (and especially can't publish a look) until they pick one.
+  useEffect(() => {
+    if (!isLoggedIn || !creatorId) {
+      setShowRequiredUsername(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      await fetchProfile(creatorId);
+      if (cancelled) return;
+      const fresh = useProfileStore.getState();
+      const u = (fresh.username ?? '').trim();
+      if (!u) {
+        setShowRequiredUsername(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isLoggedIn, creatorId, fetchProfile]);
+
+  // Hide the sheet as soon as a username appears in the store.
+  useEffect(() => {
+    if (username && username.trim()) {
+      setShowRequiredUsername(false);
+    }
+  }, [username]);
+
+  if (isWeb) {
+    return (
+      <>
+        <Tabs
+          screenOptions={{
+            headerShown: false,
+            tabBarActiveTintColor: '#1A1210',
+            tabBarInactiveTintColor: '#C4A882',
+            tabBarStyle: {
+              backgroundColor: '#FFFFFF',
+              borderTopColor: '#E8E0D8',
+              borderTopWidth: 1,
+              height: 60,
+              paddingBottom: 8,
+              paddingTop: 8,
+            },
+            tabBarLabelStyle: {
+              fontSize: 11,
+              fontWeight: '500',
+              letterSpacing: 0.2,
+            },
+          }}
+        >
+          <Tabs.Screen
+            name="index"
+            options={{
+              title: 'Home',
+              tabBarIcon: ({ color, size }) => <Ionicons name="home" color={color} size={size} />,
+              tabBarButtonTestID: 'tab-home',
+            }}
+          />
+          <Tabs.Screen
+            name="create"
+            options={{
+              title: 'Create',
+              tabBarIcon: ({ color, size }) => <Ionicons name="add-circle" color={color} size={size} />,
+              tabBarButtonTestID: 'tab-create',
+            }}
+          />
+          <Tabs.Screen
+            name="shop"
+            options={{
+              title: 'Shop',
+              tabBarIcon: ({ color, size }) => <Ionicons name="bag" color={color} size={size} />,
+              tabBarButtonTestID: 'tab-shop',
+            }}
+          />
+          <Tabs.Screen
+            name="brands"
+            options={{
+              title: 'Brands',
+              tabBarIcon: ({ color, size }) => <Ionicons name="sparkles" color={color} size={size} />,
+              tabBarButtonTestID: 'tab-brands',
+            }}
+          />
+          <Tabs.Screen
+            name="more"
+            options={{
+              title: 'More',
+              tabBarIcon: ({ color, size }) => <Ionicons name="ellipsis-horizontal-circle" color={color} size={size} />,
+              tabBarButtonTestID: 'tab-more',
+            }}
+          />
+        </Tabs>
+        {showOnboarding ? (
+          <CreatorOnboarding onComplete={() => setShowOnboarding(false)} />
+        ) : null}
+        <RequiredUsernameSheet
+          visible={showRequiredUsername}
+          onSaved={() => setShowRequiredUsername(false)}
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <CreatorTabs
+        tabBarActiveTintColor="#1A1210"
+        tabBarInactiveTintColor="#7D634A"
+        screenOptions={{}}
+      >
+        <CreatorTabs.Screen
+          name="index"
+          options={{
+            title: 'Home',
+            tabBarIcon: () => ({ sfSymbol: 'house.fill' }),
+            tabBarButtonTestID: 'tab-home',
+          }}
+        />
+        <CreatorTabs.Screen
+          name="create"
+          options={{
+            title: 'Create',
+            tabBarIcon: () => ({ sfSymbol: 'plus.circle.fill' }),
+            tabBarButtonTestID: 'tab-create',
+          }}
+        />
+        <CreatorTabs.Screen
+          name="shop"
+          options={{
+            title: 'Shop',
+            tabBarIcon: () => ({ sfSymbol: 'bag.fill' }),
+            tabBarButtonTestID: 'tab-shop',
+          }}
+        />
+        <CreatorTabs.Screen
+          name="brands"
+          options={{
+            title: 'Brands',
+            tabBarIcon: () => ({ sfSymbol: 'sparkles' }),
+            tabBarButtonTestID: 'tab-brands',
+          }}
+        />
+        <CreatorTabs.Screen
+          name="more"
+          options={{
+            title: 'More',
+            tabBarIcon: () => ({ sfSymbol: 'ellipsis.circle.fill' }),
+            tabBarButtonTestID: 'tab-more',
+          }}
+        />
+      </CreatorTabs>
+      {showOnboarding ? (
+        <CreatorOnboarding onComplete={() => setShowOnboarding(false)} />
+      ) : null}
+    </>
+  );
+}

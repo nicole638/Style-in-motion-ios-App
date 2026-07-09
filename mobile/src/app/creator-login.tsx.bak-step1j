@@ -1,0 +1,761 @@
+import React, { useState } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
+  ActivityIndicator,
+  Dimensions,
+  ScrollView,
+} from 'react-native';
+
+const { width: SW } = Dimensions.get('window');
+const BTN_W = SW - 48;
+import { router, useLocalSearchParams } from 'expo-router';
+import { Stack } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
+import { CormorantGaramond_600SemiBold } from '@expo-google-fonts/cormorant-garamond';
+import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans';
+import { ChevronLeft, Eye, EyeOff } from 'lucide-react-native';
+import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import useAuthStore from '@/lib/state/authStore';
+import useProfileStore from '@/lib/state/profileStore';
+import useCreatorStore from '@/lib/state/creatorStore';
+import { supabase } from '@/lib/supabase';
+import { claimReferral } from '@/lib/queries/referral';
+import ForgotPasswordModal from '@/components/ForgotPasswordModal';
+
+// Pending-referrer storage key — written here after a successful claim, read
+// + cleared by the onboarding welcome screen so it only renders once.
+const PENDING_REFERRER_KEY = '@sim/pending_referrer_id';
+
+type Tab = 'login' | 'signup';
+
+export default function CreatorLoginScreen() {
+  const login = useAuthStore((s) => s.login);
+  const signupAsCreator = useAuthStore((s) => s.signupAsCreator);
+
+  const { resetSuccess, ref: refParam } = useLocalSearchParams<{
+    resetSuccess?: string;
+    ref?: string;
+  }>();
+  // Stash the referral code while the user is in the signup flow. We claim it
+  // exactly once after signup succeeds. Read once for the initial tab/input
+  // defaults; the actual claim uses the live `signupReferralCode` state below
+  // so cold-install users who type the code manually still get linked.
+  const initialRefFromParam: string =
+    typeof refParam === 'string' && refParam.trim().length > 0
+      ? refParam.trim()
+      : '';
+
+  // When the user lands here via a referral link (?ref=...), default to the
+  // signup tab — that's the only flow where the referral code matters.
+  const [activeTab, setActiveTab] = useState<Tab>(
+    initialRefFromParam ? 'signup' : 'login'
+  );
+
+  // Login state
+  const [loginEmail, setLoginEmail] = useState<string>('');
+  const [loginPassword, setLoginPassword] = useState<string>('');
+  const [showLoginPassword, setShowLoginPassword] = useState<boolean>(false);
+  const [loginError, setLoginError] = useState<string>('');
+  const [isLoginLoading, setIsLoginLoading] = useState<boolean>(false);
+
+  // Signup state — "First 5 Minutes" flow keeps only email / password (with
+  // confirm) / first name. Everything else (bio, photo, IG, TikTok, follower
+  // count, last name, measurements, sizes, body type, location) was removed
+  // intentionally and now lives in a post-publish "Complete your profile"
+  // sheet — see TODO below for that follow-up surface.
+  const [signupFirstName, setSignupFirstName] = useState<string>('');
+  const [signupEmail, setSignupEmail] = useState<string>('');
+  const [signupPassword, setSignupPassword] = useState<string>('');
+  const [signupConfirmPassword, setSignupConfirmPassword] = useState<string>('');
+  const [showSignupPassword, setShowSignupPassword] = useState<boolean>(false);
+  const [signupError, setSignupError] = useState<string>('');
+  const [signupNotice, setSignupNotice] = useState<string | null>(null);
+  const [isSignupLoading, setIsSignupLoading] = useState<boolean>(false);
+  const [showForgotPassword, setShowForgotPassword] = useState<boolean>(false);
+
+  // Referral code captured at signup. Pre-filled from ?ref= deep links; can
+  // also be typed in manually by cold-install users who got the code via the
+  // share-sheet message. Claim runs post-signup and is idempotent — bad
+  // codes no-op on the backend.
+  const [signupReferralCode, setSignupReferralCode] = useState<string>(
+    initialRefFromParam
+  );
+
+  const [fontsLoaded] = useFonts({
+    CormorantGaramond_600SemiBold,
+    DMSans_400Regular,
+    DMSans_500Medium,
+  });
+
+  if (!fontsLoaded) {
+    return <View style={{ flex: 1, backgroundColor: '#F7F4F0' }} />;
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const isLoginDisabled = !loginEmail.trim() || !loginPassword.trim();
+  // "First 5 Minutes" minimal signup — only email / password / first name.
+  // Confirm password is also required so we don't lock someone out behind a
+  // typo before they've onboarded. Last name + everything else is captured
+  // post-publish in the "Complete your profile" sheet (T2.8 follow-up).
+  const isSignupDisabled =
+    !signupFirstName.trim() ||
+    !signupEmail.trim() ||
+    !signupPassword.trim() ||
+    signupConfirmPassword.length === 0 ||
+    signupPassword !== signupConfirmPassword;
+
+  const handleSignIn = async () => {
+    if (isLoginDisabled || isLoginLoading) return;
+    setLoginError('');
+    setIsLoginLoading(true);
+
+    if (!emailRegex.test(loginEmail.trim())) {
+      setLoginError('Please enter a valid email address');
+      setIsLoginLoading(false);
+      return;
+    }
+
+    try {
+      const result = await login(loginEmail.trim(), loginPassword);
+      switch (result) {
+        case 'success': {
+          const creatorId = useAuthStore.getState().creatorId!;
+          useProfileStore.getState().switchCreator(creatorId);
+          const profile = useProfileStore.getState();
+          const creatorName = useAuthStore.getState().creatorName;
+          if (!profile.username && creatorName) {
+            profile.setUsername(creatorName);
+          }
+          useCreatorStore.getState().switchCreator(creatorId);
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          router.replace('/(tabs)' as any);
+          break;
+        }
+        case 'wrong_credentials':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setLoginError('Email or password is incorrect.');
+          break;
+        case 'email_not_confirmed':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setLoginError('Please check your email and tap the confirmation link before signing in.');
+          break;
+        case 'wrong_account_type':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setLoginError('This email is registered as a shopper account. Use the shopper sign-in instead.');
+          break;
+        case 'rate_limited':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setLoginError('Too many attempts. Please wait a few minutes and try again.');
+          break;
+        case 'server_error':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setLoginError('Something went wrong on our end. Please try again in a moment, or email support@styledinmotion.app if it keeps happening.');
+          break;
+        case 'unknown_error':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setLoginError("Couldn't log you in. Please try again.");
+          break;
+      }
+    } catch {
+      setLoginError('Something went wrong. Please try again.');
+    } finally {
+      setIsLoginLoading(false);
+    }
+  };
+
+  const handleSignUp = async () => {
+    if (isSignupDisabled || isSignupLoading) return;
+    setSignupError('');
+    setSignupNotice(null);
+    setIsSignupLoading(true);
+
+    if (!emailRegex.test(signupEmail.trim())) {
+      setSignupError('Please enter a valid email address');
+      setIsSignupLoading(false);
+      return;
+    }
+
+    if (signupPassword.length < 6) {
+      setSignupError('Password must be at least 6 characters');
+      setIsSignupLoading(false);
+      return;
+    }
+
+    if (!signupFirstName.trim()) {
+      setSignupError('First name is required.');
+      setIsSignupLoading(false);
+      return;
+    }
+
+    if (signupPassword !== signupConfirmPassword) {
+      setSignupError('Passwords do not match');
+      setIsSignupLoading(false);
+      return;
+    }
+
+    try {
+      const trimmedFirst = signupFirstName.trim();
+      // "First 5 Minutes" flow: last name is captured later in the
+      // post-publish "Complete your profile" sheet, so we pass an empty
+      // string to signupAsCreator (which already treats empty lastName as
+      // NULL in the DB row).
+      const fullName = trimmedFirst;
+      const result = await signupAsCreator(
+        trimmedFirst,
+        '',
+        signupEmail.trim(),
+        signupPassword
+      );
+      switch (result) {
+        case 'success': {
+          const creatorId = useAuthStore.getState().creatorId!;
+          useProfileStore.getState().switchCreator(creatorId);
+          useProfileStore.getState().setUsername(fullName);
+          useCreatorStore.getState().switchCreator(creatorId);
+
+          // Fire-and-forget starter pack seed. We log on failure but do NOT
+          // block onboarding navigation — the pick-three screen will fall
+          // back to whatever closet items the creator already has if this
+          // RPC isn't live yet or fails silently.
+          (async () => {
+            try {
+              const { error: seedError } = await supabase.rpc('seed_starter_pack', { p_creator_id: creatorId });
+              if (seedError) {
+                console.warn('[creator-signup] seed_starter_pack failed:', seedError.message);
+              }
+            } catch (e: any) {
+              console.warn('[creator-signup] seed_starter_pack threw:', e?.message ?? e);
+            }
+          })();
+
+          // Fire-and-forget referral claim — we don't block onboarding nav on
+          // this. If `linked` comes back true, persist the referrer id so the
+          // onboarding welcome step can render "Invited by @{username}".
+          // Source from the current input value (not just ?ref=) so a cold-
+          // install user who typed the code manually still gets linked.
+          const referralCodeToClaim = signupReferralCode.trim();
+          if (referralCodeToClaim) {
+            (async () => {
+              const result = await claimReferral(creatorId, referralCodeToClaim);
+              if (result?.linked && result.referrer_id) {
+                try {
+                  await AsyncStorage.setItem(PENDING_REFERRER_KEY, result.referrer_id);
+                } catch (e: any) {
+                  console.warn('[creator-signup] persist referrer id failed:', e?.message ?? e);
+                }
+              }
+            })();
+          }
+
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          // BYPASS onboarding-socials/profile-setup — first-look flow now
+          // gates onboarding. Profile fields are collected post-publish
+          // (TODO: "Complete your profile" sheet after celebration).
+          router.replace('/onboarding/welcome' as any);
+          break;
+        }
+        case 'confirm_email':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          setSignupNotice("Check your email \u2014 we sent a confirmation link. Confirm your account before signing in. If you don\u2019t see it within a minute, check your spam or junk folder.");
+          break;
+        case 'invalid_name':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError('Please enter your first name.');
+          break;
+        case 'email_taken':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError('An account with this email already exists. Try logging in instead.');
+          break;
+        case 'invalid_email':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError('Please enter a valid email address.');
+          break;
+        case 'weak_password':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError('Password is too weak. Use at least 8 characters.');
+          break;
+        case 'rate_limited':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError('Too many attempts. Please wait a few minutes and try again.');
+          break;
+        case 'email_send_failed':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError("Your account was created but we couldn't send a confirmation email. Try signing in, or email support@styledinmotion.app.");
+          break;
+        case 'server_error':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError('Something went wrong on our end. Please try again in a moment, or email support@styledinmotion.app if it keeps happening.');
+          break;
+        case 'unknown_error':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError("Couldn't create your account. Please try again, or email support@styledinmotion.app.");
+          break;
+      }
+    } catch {
+      setSignupError('Something went wrong. Please try again.');
+    } finally {
+      setIsSignupLoading(false);
+    }
+  };
+
+  const switchTab = (tab: Tab) => {
+    setActiveTab(tab);
+    setLoginError('');
+    setSignupError('');
+    setSignupNotice(null);
+  };
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']} testID="creator-login-screen">
+      <Stack.Screen options={{ headerShown: false }} />
+
+      <KeyboardAvoidingView
+        style={styles.keyboardView}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <Pressable
+            onPress={() => router.back()}
+            style={styles.backButton}
+            testID="back-button"
+          >
+            <ChevronLeft size={24} color="#1A1210" />
+          </Pressable>
+          <Text style={styles.wordmark}>Styled in Motion</Text>
+          <View style={styles.backButton} />
+        </View>
+
+        {/* Headline */}
+        <View style={styles.headlineContainer}>
+          <Text style={styles.headline}>Creator Account</Text>
+          <Text style={styles.subheadline}>Share your style with the world</Text>
+        </View>
+
+        {resetSuccess === '1' ? (
+          <View style={styles.successBanner} testID="reset-success-banner">
+            <Text style={styles.successBannerText}>
+              Password updated. Sign in with your new password.
+            </Text>
+          </View>
+        ) : null}
+
+        {signupNotice ? (
+          <View style={styles.successBanner} testID="signup-notice-banner">
+            <Text style={styles.successBannerText}>
+              {signupNotice}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Tabs */}
+        <View style={styles.tabRow}>
+          <Pressable
+            style={[styles.tab, activeTab === 'login' && styles.tabActive]}
+            onPress={() => switchTab('login')}
+            testID="login-tab"
+          >
+            <Text style={[styles.tabLabel, activeTab === 'login' && styles.tabLabelActive]}>
+              Sign In
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.tab, activeTab === 'signup' && styles.tabActive]}
+            onPress={() => switchTab('signup')}
+            testID="signup-tab"
+          >
+            <Text style={[styles.tabLabel, activeTab === 'signup' && styles.tabLabelActive]}>
+              Create Account
+            </Text>
+          </Pressable>
+        </View>
+
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {activeTab === 'login' ? (
+            <View testID="login-form">
+              {/* Email */}
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="your@email.com"
+                  placeholderTextColor="#A0938D"
+                  cursorColor="#2C2C2C"
+                  selectionColor="rgba(44, 44, 44, 0.3)"
+                  value={loginEmail}
+                  onChangeText={(text) => { setLoginEmail(text); setLoginError(''); }}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  testID="email-input"
+                />
+              </View>
+
+              {/* Password */}
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={[styles.input, styles.passwordInput]}
+                  placeholder="Password"
+                  placeholderTextColor="#A0938D"
+                  cursorColor="#2C2C2C"
+                  selectionColor="rgba(44, 44, 44, 0.3)"
+                  value={loginPassword}
+                  onChangeText={(text) => { setLoginPassword(text); setLoginError(''); }}
+                  secureTextEntry={!showLoginPassword}
+                  autoCapitalize="none"
+                  testID="password-input"
+                />
+                <Pressable
+                  style={styles.eyeButton}
+                  onPress={() => setShowLoginPassword(!showLoginPassword)}
+                  testID="toggle-password-button"
+                >
+                  {showLoginPassword ? (
+                    <EyeOff size={20} color="#A0938D" />
+                  ) : (
+                    <Eye size={20} color="#A0938D" />
+                  )}
+                </Pressable>
+              </View>
+
+              {loginError ? (
+                <Text style={styles.errorText} testID="login-error">{loginError}</Text>
+              ) : null}
+
+              <Pressable
+                onPress={() => setShowForgotPassword(true)}
+                testID="forgot-password-button"
+              >
+                <Text style={[styles.forgotText, { color: '#B87063', textAlign: 'right' }]}>Forgot Password?</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleSignIn}
+                disabled={isLoginDisabled || isLoginLoading}
+                testID="sign-in-button"
+                style={[styles.button, (isLoginDisabled || isLoginLoading) && styles.buttonDisabled]}
+              >
+                {isLoginLoading ? (
+                  <ActivityIndicator color="#FFFFFF" testID="loading-indicator" />
+                ) : (
+                  <Text style={[styles.buttonText, isLoginDisabled && styles.buttonTextDisabled]}>Sign In</Text>
+                )}
+              </Pressable>
+            </View>
+          ) : (
+            <View testID="signup-form">
+              {/* Email first — minimal "First 5 Minutes" form. Order:
+                  1. Email, 2. Password + Confirm, 3. First name.
+                  Last name + everything else (bio/photo/IG/TikTok/follower
+                  count/measurements/sizes/body type/location) was removed
+                  intentionally — they re-appear in the post-publish
+                  "Complete your profile" sheet.
+                  TODO: wire "Complete your profile" sheet trigger after the
+                  user's first look is published (T2.8 follow-up). */}
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="your@email.com"
+                  placeholderTextColor="#A0938D"
+                  cursorColor="#2C2C2C"
+                  selectionColor="rgba(44, 44, 44, 0.3)"
+                  value={signupEmail}
+                  onChangeText={(text) => { setSignupEmail(text); setSignupError(''); }}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  testID="signup-email-input"
+                />
+              </View>
+
+              {/* Password */}
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={[styles.input, styles.passwordInput]}
+                  placeholder="Password (min 6 characters)"
+                  placeholderTextColor="#A0938D"
+                  cursorColor="#2C2C2C"
+                  selectionColor="rgba(44, 44, 44, 0.3)"
+                  value={signupPassword}
+                  onChangeText={(text) => { setSignupPassword(text); setSignupError(''); }}
+                  secureTextEntry={!showSignupPassword}
+                  autoCapitalize="none"
+                  testID="signup-password-input"
+                />
+                <Pressable
+                  style={styles.eyeButton}
+                  onPress={() => setShowSignupPassword(!showSignupPassword)}
+                  testID="toggle-signup-password-button"
+                >
+                  {showSignupPassword ? (
+                    <EyeOff size={20} color="#A0938D" />
+                  ) : (
+                    <Eye size={20} color="#A0938D" />
+                  )}
+                </Pressable>
+              </View>
+
+              {/* Confirm password */}
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={[styles.input, styles.passwordInput]}
+                  placeholder="Confirm password"
+                  placeholderTextColor="#A0938D"
+                  cursorColor="#2C2C2C"
+                  selectionColor="rgba(44, 44, 44, 0.3)"
+                  value={signupConfirmPassword}
+                  onChangeText={(text) => { setSignupConfirmPassword(text); setSignupError(''); }}
+                  secureTextEntry={!showSignupPassword}
+                  autoCapitalize="none"
+                  testID="signup-confirm-password-input"
+                />
+              </View>
+
+              {/* First name */}
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="First name"
+                  placeholderTextColor="#A0938D"
+                  cursorColor="#2C2C2C"
+                  selectionColor="rgba(44, 44, 44, 0.3)"
+                  value={signupFirstName}
+                  onChangeText={(text) => { setSignupFirstName(text); setSignupError(''); }}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  testID="signup-first-name-input"
+                />
+              </View>
+
+              {/* Referral code (optional) — pre-filled from ?ref= deep link,
+                  also typeable by cold-install users who saw the code in the
+                  share-sheet message. claim_referral is idempotent + no-ops
+                  on bad codes, so no client-side validation needed. */}
+              <Text style={styles.fieldLabel}>Referral code (optional)</Text>
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="reil-3787"
+                  placeholderTextColor="#A0938D"
+                  cursorColor="#2C2C2C"
+                  selectionColor="rgba(44, 44, 44, 0.3)"
+                  value={signupReferralCode}
+                  onChangeText={setSignupReferralCode}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  testID="signup-referral-code-input"
+                />
+              </View>
+
+              {signupError ? (
+                <Text style={styles.errorText} testID="signup-error">{signupError}</Text>
+              ) : null}
+
+              <Pressable
+                onPress={handleSignUp}
+                disabled={isSignupDisabled || isSignupLoading}
+                testID="create-account-button"
+                style={[styles.button, (isSignupDisabled || isSignupLoading) && styles.buttonDisabled]}
+              >
+                {isSignupLoading ? (
+                  <ActivityIndicator color="#FFFFFF" testID="signup-loading-indicator" />
+                ) : (
+                  <Text style={[styles.buttonText, isSignupDisabled && styles.buttonTextDisabled]}>Create Account</Text>
+                )}
+              </Pressable>
+
+              <Text style={styles.forgotText}>
+                By signing up, you agree to our Terms & Privacy Policy
+              </Text>
+            </View>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      <ForgotPasswordModal
+        visible={showForgotPassword}
+        onClose={() => setShowForgotPassword(false)}
+        initialEmail={loginEmail}
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#F7F4F0',
+  },
+  keyboardView: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wordmark: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 20,
+    color: '#1A1210',
+    textAlign: 'center',
+  },
+  headlineContainer: {
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 24,
+  },
+  headline: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 32,
+    color: '#1A1210',
+  },
+  subheadline: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 16,
+    color: '#A0938D',
+    marginTop: 6,
+  },
+  tabRow: {
+    flexDirection: 'row',
+    marginHorizontal: 24,
+    backgroundColor: '#EDE8E3',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 24,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  tabActive: {
+    backgroundColor: '#1A1210',
+  },
+  tabLabel: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 14,
+    color: '#3D3330',
+  },
+  tabLabelActive: {
+    color: '#F7F4F0',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingBottom: 32,
+  },
+  inputContainer: {
+    marginBottom: 16,
+    position: 'relative',
+  },
+  fieldLabel: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 12,
+    color: '#6B5E58',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  nameField: {
+    flex: 1,
+  },
+  input: {
+    height: 52,
+    borderWidth: 1,
+    borderColor: '#E8E0D8',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    fontFamily: 'DMSans_400Regular',
+    color: '#1A1210',
+    backgroundColor: '#FFFFFF',
+  },
+  passwordInput: {
+    paddingRight: 52,
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: 16,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+  },
+  errorText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#B87063',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  button: {
+    width: BTN_W,
+    height: 52,
+    backgroundColor: '#1A1210',
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  buttonDisabled: {
+    backgroundColor: '#CFC6BF',
+  },
+  buttonText: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 18,
+    color: '#F7F4F0',
+  },
+  buttonTextDisabled: {
+    color: '#4A3C38',
+  },
+  forgotText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#A0938D',
+    textAlign: 'center',
+    marginTop: 20,
+  },
+  successBanner: {
+    backgroundColor: '#E8F5EE',
+    borderRadius: 10,
+    marginHorizontal: 24,
+    marginBottom: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  successBannerText: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#2E7D52',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+});
