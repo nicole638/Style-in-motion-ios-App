@@ -16,3 +16,6 @@ build/
 # logs & OS junk
 *.log
 .DS_Store
+
+# Apple private keys — never in git
+*.p8
