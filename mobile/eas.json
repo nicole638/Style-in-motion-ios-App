@@ -30,6 +30,22 @@
       "android": {
         "distribution": "store"
       }
+    },
+    "simulator": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": true
+      },
+      "env": {
+        "EXPO_PUBLIC_FEATURE_COLLAGE": "true",
+        "EXPO_PUBLIC_BACKEND_URL": "https://api.styledinmotion.app",
+        "EXPO_PUBLIC_SCRAPINGBEE_KEY": "3EINQX1EAO56OFDJ6VIGV9NB9T6O3JQWXTS3OJJ2HBFS8MDPNW6TS6SUSI3L7Q8XYQKP48N9VVU5NJIO",
+        "EXPO_PUBLIC_EXAMPLE_ENV_VAR": "test",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJnaGxjbnJ0dHZsdnBoemFodWRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MTc5NDIsImV4cCI6MjA5MTA5Mzk0Mn0.PlnMZUtd894pnb_ddx0Rp1T0IGOOKJTFqA6fFq5Bt9s",
+        "EXPO_PUBLIC_VIBECODE_BACKEND_URL": "https://api.styledinmotion.app",
+        "BACKEND_URL": "https://api.styledinmotion.app",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://rghlcnrttvlvphzahudf.supabase.co"
+      }
     }
   },
   "submit": {
