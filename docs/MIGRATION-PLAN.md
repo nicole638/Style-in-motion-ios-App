@@ -159,3 +159,18 @@ now has a verified Supabase twin.**
   the hostname + provisions the cert. Then Phase 3 bakes
   EXPO_PUBLIC_BACKEND_URL=https://api.styledinmotion.app into the new build.
 - Registrar 2FA enabled by Nicole (also logged in compliance evidence).
+
+**2026-07-10 — api.styledinmotion.app VERIFIED LIVE. Phase 2 gateway complete.**
+- Domain attached to the Vercel project, TLS cert issued (CN=api.styledinmotion.app).
+- Verified on the real domain: /api/shop 302 with wrapped affiliate URL +
+  creator subtag (test row confirmed served_by='edge', then deleted);
+  campaigns/product-info 200; validation 400; dead routes 404.
+- The app's future backend URL is now permanently Nicole-owned:
+  Phase 3 bakes EXPO_PUBLIC_BACKEND_URL=https://api.styledinmotion.app.
+- Optional (Vercel's suggestion, not required): update the Squarespace CNAME
+  value for `api` to `9d93cf4830e00731.vercel-dns-017.com.` — the current
+  record works; Vercel just prefers their newer format.
+- Still open in Phase 2: repoint the two websites' backend URL env vars to
+  the new domain (Nicole dashboard task, non-urgent — they can follow any
+  time before decommission; check whether the shopper site references
+  meadow-grindstone at all while doing it).
