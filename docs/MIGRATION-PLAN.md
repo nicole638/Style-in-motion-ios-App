@@ -145,3 +145,17 @@ now has a verified Supabase twin.**
   retired with the backend at decommission; creators-web check for `accounts`
   still pending before final shutoff.
 - Remaining Phase 2: api.styledinmotion.app front door + repoint web/creators-web.
+
+**2026-07-10 — API front door LIVE (gateway verified end-to-end).**
+- Vercel project `style-in-motion-ios-app` imported from the GitHub repo
+  (rootDirectory=api-gateway) — auto-deploys on every push, like the sites.
+- Full suite passed via the gateway: /api/shop 302 pass-through with wrapped
+  affiliate URL + served_by='edge' click row (verified then deleted);
+  product-info batch; social-followers validation; remove-background cache
+  hit (same file); dead legacy routes (sample/accounts/share-beacon/awin-sync)
+  correctly 404 (allowlist).
+- DNS: api.styledinmotion.app CNAME → Vercel (Squarespace). Remaining half-step:
+  add the domain in the Vercel project (Settings → Domains) so Vercel claims
+  the hostname + provisions the cert. Then Phase 3 bakes
+  EXPO_PUBLIC_BACKEND_URL=https://api.styledinmotion.app into the new build.
+- Registrar 2FA enabled by Nicole (also logged in compliance evidence).

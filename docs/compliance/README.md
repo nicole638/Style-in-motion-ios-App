@@ -57,3 +57,7 @@ ISO 27001 Annex A):
   the password-reset screen now explain a breach rejection in plain language
   ("appeared in a known data breach") instead of a misleading length error or
   a generic failure loop. Sign-ins are unaffected by design (no lockouts).
+- **2026-07-10** — Two-factor authentication enabled on the Squarespace
+  account (domain registrar/DNS — controls styledinmotion.app + .studio).
+  Registrar 2FA is a standard auditor checkpoint (domain hijack = full
+  platform compromise).
