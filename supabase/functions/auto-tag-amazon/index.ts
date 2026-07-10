@@ -1,9 +1,26 @@
+// auto-tag-amazon v15 — per-creator tag resolution (fixes attribution leak).
+//
+// v14 bug: hardcoded AMAZON_ASSOCIATES_TAG env var as the wrap tag for every
+// creator. That meant Kerri's items got tagged styledinmotio-20 (master) even
+// though her creators.amazon_tracking_id = styledinmotio-kerri-20. Every click
+// was attributed to the master tag instead of the creator's sub-tag.
+//
+// v15 resolution order (mirrors affiliate-wrap-url EF v8):
+//   1. creator_profiles.amazon_use_own_tag + amazon_own_tag_enabled +
+//      amazon_associates_tag IS NOT NULL → creator's personal Associates tag
+//   2. creators.amazon_tracking_id IS NOT NULL → per-creator sub-tag under
+//      master account (most common)
+//   3. fallback → master env var (styledinmotio-20) only when no creator
+//      tracking_id is set
+
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
+
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 const AMAZON_HOST_RE = /^(www\.)?amazon\.(com|ca|co\.uk|de|fr|it|es|co\.jp|com\.au|com\.mx|in)$/i
 const SHORTLINK_HOSTS = new Set(['a.co', 'amzn.to', 'amzn.eu', 'amzn.asia'])
@@ -27,30 +44,48 @@ async function resolveShortlink(shortUrl: string): Promise<string | null> {
   const timeout = setTimeout(() => controller.abort(), 5000)
   try {
     const res = await fetch(shortUrl, {
-      method: 'HEAD',
+      method: 'GET',
       redirect: 'follow',
       signal: controller.signal,
+      headers: { 'User-Agent': BROWSER_UA, 'Accept': 'text/html' },
     })
     clearTimeout(timeout)
+    if (!res.ok) return null
     return res.url
   } catch {
     clearTimeout(timeout)
-    // Retry with GET if HEAD fails
-    const controller2 = new AbortController()
-    const timeout2 = setTimeout(() => controller2.abort(), 5000)
-    try {
-      const res = await fetch(shortUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller2.signal,
-      })
-      clearTimeout(timeout2)
-      return res.url
-    } catch {
-      clearTimeout(timeout2)
-      return null
-    }
+    return null
   }
+}
+
+async function resolveCreatorAmazonTag(
+  supabaseAdmin: ReturnType<typeof createClient>,
+  creatorId: string | null,
+  masterTag: string,
+): Promise<{ tag: string; source: 'own' | 'creator_tracking_id' | 'master' | 'master_no_creator' }> {
+  if (!creatorId) return { tag: masterTag, source: 'master_no_creator' }
+
+  // 1. Creator's own Amazon Associates account (founder/paid tier)
+  const { data: prof } = await supabaseAdmin.from('creator_profiles')
+    .select('amazon_use_own_tag, amazon_own_tag_enabled, amazon_associates_tag')
+    .eq('creator_id', creatorId).maybeSingle()
+  if (
+    prof?.amazon_use_own_tag === true &&
+    prof?.amazon_own_tag_enabled === true &&
+    typeof prof?.amazon_associates_tag === 'string' &&
+    prof.amazon_associates_tag.trim().length > 0
+  ) {
+    return { tag: prof.amazon_associates_tag.trim(), source: 'own' }
+  }
+
+  // 2. Per-creator sub-tag under master account (most common)
+  const { data: c } = await supabaseAdmin.from('creators')
+    .select('amazon_tracking_id').eq('id', creatorId).maybeSingle()
+  if (typeof c?.amazon_tracking_id === 'string' && c.amazon_tracking_id.trim().length > 0) {
+    return { tag: c.amazon_tracking_id.trim(), source: 'creator_tracking_id' }
+  }
+
+  return { tag: masterTag, source: 'master' }
 }
 
 Deno.serve(async (req) => {
@@ -63,18 +98,18 @@ Deno.serve(async (req) => {
     console.log('[auto-tag-amazon] invoked', { item_id, ts: new Date().toISOString() })
     if (!item_id) throw new Error('item_id is required')
 
-    const tag = Deno.env.get('AMAZON_ASSOCIATES_TAG')
-    if (!tag) throw new Error('AMAZON_ASSOCIATES_TAG not set')
+    const masterTag = Deno.env.get('AMAZON_ASSOCIATES_TAG')
+    if (!masterTag) throw new Error('AMAZON_ASSOCIATES_TAG not set')
 
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    // 1. Read the item
+    // 1. Read the item (now also pull creator_id for tag resolution)
     const { data: item, error: itemError } = await supabaseAdmin
       .from('creator_items')
-      .select('id, url, affiliate_url, affiliate_provider')
+      .select('id, creator_id, url, affiliate_url, affiliate_provider')
       .eq('id', item_id)
       .single()
 
@@ -96,19 +131,16 @@ Deno.serve(async (req) => {
     }
 
     if (!item.url) {
-      console.log('[auto-tag-amazon] no_url', { item_id })
       return new Response(
         JSON.stringify({ ok: false, reason: 'no_url' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       )
     }
 
-    // 2. Parse and detect Amazon domain
     let parsedUrl: URL
     try {
       parsedUrl = new URL(item.url)
     } catch {
-      console.log('[auto-tag-amazon] invalid_url', { item_id, url: item.url })
       return new Response(
         JSON.stringify({ ok: false, reason: 'invalid_url' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
@@ -116,19 +148,16 @@ Deno.serve(async (req) => {
     }
 
     if (!isAmazonHost(parsedUrl.hostname)) {
-      console.log('[auto-tag-amazon] not_amazon', { item_id, host: parsedUrl.hostname })
       return new Response(
         JSON.stringify({ ok: false, reason: 'not_amazon' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       )
     }
 
-    // 3. Resolve shortlinks
     let resolvedUrl = item.url
     if (isShortlink(parsedUrl.hostname)) {
       const expanded = await resolveShortlink(item.url)
       if (!expanded) {
-        console.log('[auto-tag-amazon] shortlink_timeout', { item_id, url: item.url })
         return new Response(
           JSON.stringify({ ok: false, reason: 'shortlink_timeout' }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
@@ -137,20 +166,20 @@ Deno.serve(async (req) => {
       resolvedUrl = expanded
     }
 
-    // 4. Extract ASIN
     const asin = extractAsin(resolvedUrl)
     if (!asin) {
-      console.log('[auto-tag-amazon] no_asin', { item_id, resolvedUrl })
       return new Response(
-        JSON.stringify({ ok: false, reason: 'no_asin' }),
+        JSON.stringify({ ok: false, reason: 'no_asin', resolvedUrl }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
       )
     }
 
-    // 5. Build canonical affiliate URL (strip any existing tag= param)
+    // 5. Resolve the per-creator tag (this is the fix)
+    const { tag, source } = await resolveCreatorAmazonTag(
+      supabaseAdmin, item.creator_id ?? null, masterTag,
+    )
     const affiliateUrl = `https://www.amazon.com/dp/${asin}?tag=${tag}`
 
-    // 6. Write back
     const { error: updateError } = await supabaseAdmin
       .from('creator_items')
       .update({
@@ -161,13 +190,12 @@ Deno.serve(async (req) => {
       .eq('id', item_id)
 
     if (updateError) {
-      console.error('[auto-tag-amazon] update_failed', { item_id, error: updateError.message })
       throw new Error('Failed to update item: ' + updateError.message)
     }
 
-    console.log('[auto-tag-amazon] wrapped', { item_id, asin, affiliateUrl })
+    console.log('[auto-tag-amazon] wrapped', { item_id, asin, tag, source })
     return new Response(
-      JSON.stringify({ ok: true, affiliate_url: affiliateUrl }),
+      JSON.stringify({ ok: true, affiliate_url: affiliateUrl, tag, tag_source: source }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
     )
 
