@@ -174,3 +174,15 @@ now has a verified Supabase twin.**
   the new domain (Nicole dashboard task, non-urgent — they can follow any
   time before decommission; check whether the shopper site references
   meadow-grindstone at all while doing it).
+
+**2026-07-10 — Rung 1 passed: first fully-owned build verified.**
+- EAS build 39e05f7a (simulator profile) under the styledinmotion account.
+- Static inspection of the artifact: api.styledinmotion.app baked in (1 ref),
+  meadow-grindstone ZERO refs, correct bundle id, ShareExtension.appex
+  embedded.
+- Dynamic: installed + launched on the iPhone 17 Pro simulator — welcome
+  screen renders cleanly (screenshot verified).
+- Apple ASC API key received (Key ID NC6S2X9275), stored at
+  Documents/Styled-in-Motion/credentials/ (outside git; *.p8 gitignored).
+- Rung 2 (device build w/ real signing + share-extension provisioning) blocked
+  only on the ASC Issuer ID.
