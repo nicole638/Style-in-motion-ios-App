@@ -220,3 +220,16 @@ now has a verified Supabase twin.**
 - ASC API note: the bundleIdCapabilities REST endpoint does NOT report App
   Groups (showed "none" while the portal showed them enabled) — portal is the
   source of truth for App Groups; /v1/appGroups 404s (portal-only).
+
+**2026-07-10 — Rung 2 GREEN. Signed device build 50fc11d0 FINISHED + verified.**
+- Downloaded the signed .ipa and inspected codesign entitlements on BOTH targets:
+  - main  com.vibecode.styled.in.motion-c77kcu       → application-groups = [group.studio.styledinmotion] ✅
+  - .share com.vibecode.styled.in.motion-c77kcu.share → application-groups = [group.studio.styledinmotion] ✅
+  Both share the SAME group → the share extension can hand data to the app. The
+  July breakage is fixed and PROVEN in the binary (not just the portal).
+  Also: main app carries applinks:app.styledinmotion.app (deep links intact).
+- Install (internal dist, Nicole's registered iPhone):
+  https://expo.dev/accounts/styledinmotion/projects/styledinmotion/builds/50fc11d0-b4a6-4a4b-bed9-80ba5c625b1c
+- Backend baked = https://api.styledinmotion.app (verified in rung-1 static scan;
+  same eas.json env). Manual on-device tests pending: Safari→SiM share, shop tap,
+  Pinterest connect.
