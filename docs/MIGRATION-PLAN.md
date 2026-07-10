@@ -200,3 +200,23 @@ now has a verified Supabase twin.**
   the ad-hoc device multiselect PRE-SELECTS registered devices — press Enter
   only (a space keystroke DEselects and trips "minimum 1"). Both targets prompt
   for cert-reuse + device-select, so the prompt driver must handle repeats.
+
+**2026-07-10 — ROOT CAUSE of the July share breakage FOUND + FIXED (Apple portal).**
+- Build 917342c7 errored: XCODE_BUILD_ERROR — provisioning profile didn't
+  support the group.studio.styledinmotion App Group on the main target.
+- Diagnosis via Apple Developer portal (Nicole logged in, Claude drove with her
+  explicit OK): the MAIN App ID com.vibecode.styled.in.motion-c77kcu had App
+  Groups enabled but associated with the WRONG group
+  (group.com.vibecode.styled.in.motion-c77kcu) — the app's entitlements declare
+  group.studio.styledinmotion ("SiM Share"), which was UNchecked. That mismatch
+  is the actual mechanism behind the recurring share-extension failures; Vibecode
+  had been masking it with hand-made profiles.
+- Fix: checked "SiM Share" (group.studio.styledinmotion) on the main App ID,
+  left the existing group in place (extra group in a profile is harmless), Saved
+  + confirmed Apple's "profiles will regenerate" warning. The .share extension
+  App ID was already correctly associated with both groups — no change.
+- No effect on the shipped App Store build (already signed). EAS regenerates the
+  ad-hoc profile on the next build.
+- ASC API note: the bundleIdCapabilities REST endpoint does NOT report App
+  Groups (showed "none" while the portal showed them enabled) — portal is the
+  source of truth for App Groups; /v1/appGroups 404s (portal-only).
