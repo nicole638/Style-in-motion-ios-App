@@ -172,6 +172,10 @@ export default function PublicSignupScreen() {
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           setError('Password is too weak. Use at least 8 characters.');
           break;
+        case 'leaked_password':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setError('This password has appeared in a known data breach. Please choose a different one.');
+          break;
         case 'rate_limited':
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           setError('Too many attempts. Please wait a few minutes and try again.');

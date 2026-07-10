@@ -18,6 +18,7 @@ import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans'
 import { Eye, EyeOff, ShieldCheck } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '@/lib/supabase';
+import { mapSignupError } from '@/lib/utils/mapAuthError';
 import useAuthStore from '@/lib/state/authStore';
 
 export default function ResetPasswordScreen() {
@@ -101,7 +102,19 @@ export default function ResetPasswordScreen() {
 
       if (updateError) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        setError('Failed to update password. Please try again.');
+        // Same translation the signup screens use — most importantly the
+        // leaked-password case (Supabase's HaveIBeenPwned check), which
+        // otherwise reads as an inexplicable "failed, try again" loop.
+        const outcome = mapSignupError(updateError);
+        if (outcome === 'leaked_password') {
+          setError('This password has appeared in a known data breach. Please choose a different one.');
+        } else if (outcome === 'weak_password') {
+          setError('Password is too weak. Use at least 8 characters.');
+        } else if (outcome === 'rate_limited') {
+          setError('Too many attempts. Please wait a minute and try again.');
+        } else {
+          setError('Failed to update password. Please try again.');
+        }
         return;
       }
 

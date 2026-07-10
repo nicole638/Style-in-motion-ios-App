@@ -52,3 +52,8 @@ ISO 27001 Annex A):
   regression-tested on both backends after).
 - **2026-07-09** — `click_events.served_by` marker added: complete origin
   audit trail for the revenue path during the backend migration.
+- **2026-07-09** — Leaked-password protection enabled (Supabase Auth →
+  Attack Protection, by Nicole). Client UX updated to match: signup screens and
+  the password-reset screen now explain a breach rejection in plain language
+  ("appeared in a known data breach") instead of a misleading length error or
+  a generic failure loop. Sign-ins are unaffected by design (no lockouts).

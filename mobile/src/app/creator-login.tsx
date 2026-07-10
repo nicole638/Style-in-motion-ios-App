@@ -321,6 +321,10 @@ export default function CreatorLoginScreen() {
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           setSignupError('Password is too weak. Use at least 8 characters.');
           break;
+        case 'leaked_password':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setSignupError('This password has appeared in a known data breach. Please choose a different one.');
+          break;
         case 'rate_limited':
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
           setSignupError('Too many attempts. Please wait a few minutes and try again.');

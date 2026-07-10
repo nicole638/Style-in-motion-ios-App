@@ -5,6 +5,7 @@ export type SignupOutcome =
   | 'email_taken'
   | 'invalid_email'
   | 'weak_password'
+  | 'leaked_password'
   | 'rate_limited'
   | 'email_send_failed'
   | 'server_error'
@@ -28,8 +29,23 @@ export function mapSignupError(error: unknown): SignupOutcome {
   if (code === 'user_already_exists' ||
       /already.*regist|already.*exist/.test(msg))
     return 'email_taken';
-  if (code === 'weak_password')
+  if (code === 'weak_password') {
+    // Supabase's leaked-password protection (HaveIBeenPwned check) reports
+    // under the same weak_password code. Distinguish it so the UI can say
+    // "this password appeared in a data breach" instead of the misleading
+    // "use at least 8 characters" (a leaked password is often long enough).
+    // supabase-js surfaces reasons as `reasons: ['pwned' | 'length' | ...]`
+    // (sometimes nested under weak_password); the message regex is a backstop.
+    const reasons: string[] = Array.isArray(e?.reasons)
+      ? e.reasons
+      : Array.isArray(e?.weak_password?.reasons)
+        ? e.weak_password.reasons
+        : [];
+    if (reasons.includes('pwned') ||
+        /pwned|data breach|compromised|easy to guess/.test(msg))
+      return 'leaked_password';
     return 'weak_password';
+  }
   if (code === 'invalid_email' ||
       code === 'email_address_invalid' ||
       code === 'validation_failed')
