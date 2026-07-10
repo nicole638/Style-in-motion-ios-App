@@ -186,3 +186,17 @@ now has a verified Supabase twin.**
   Documents/Styled-in-Motion/credentials/ (outside git; *.p8 gitignored).
 - Rung 2 (device build w/ real signing + share-extension provisioning) blocked
   only on the ASC Issuer ID.
+
+**2026-07-10 — Rung 2 (signed device build) SUBMITTED — build 917342c7.**
+- Full Apple credential setup completed non-interactively via the ASC API key
+  (Key ID NC6S2X9275) — no Apple password prompt. eas.json preview profile now
+  carries the production env (gateway URL).
+- BOTH targets provisioned under Nicole's team (9JQTW36Y47): the app AND
+  ShareExtension — the extension that Vibecode's account-flip kept corrupting.
+  This is the structural fix for the July share-extension loop.
+- Device 00008150-...401C (Nicole's iPhone) registered + included in the ad-hoc
+  profile. Internal distribution → installable via link, no TestFlight needed.
+- Toolchain notes for next time: EXPO_APPLE_TEAM_TYPE=COMPANY_OR_ORGANIZATION;
+  the ad-hoc device multiselect PRE-SELECTS registered devices — press Enter
+  only (a space keystroke DEselects and trips "minimum 1"). Both targets prompt
+  for cert-reuse + device-select, so the prompt driver must handle repeats.
