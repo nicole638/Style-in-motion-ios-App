@@ -233,3 +233,20 @@ now has a verified Supabase twin.**
 - Backend baked = https://api.styledinmotion.app (verified in rung-1 static scan;
   same eas.json env). Manual on-device tests pending: Safari→SiM share, shop tap,
   Pinterest connect.
+
+**2026-07-10 — ✅ RUNG 2 CONFIRMED ON DEVICE. The migration's founding bug is dead.**
+- Nicole installed build 50fc11d0 on her iPhone (Developer Mode enabled once — a
+  standard iOS gate for non-App-Store installs, one-time per device).
+- Safari → Share → Styled in Motion WORKED and the item landed correctly. This
+  is the share-extension flow that had been broken since July; proven fixed on a
+  fully Nicole-owned build (her Apple/Expo/GitHub/Supabase, api.styledinmotion.app).
+- "Everything else looks good" on device.
+- Minor UX papercut (NOT introduced by the migration — we never touched share/
+  closet app code): the shared item didn't appear in the closet until she
+  navigated out and back in. Pre-existing on-focus refresh gap; flagged as
+  optional polish, not a blocker.
+- Phase 3 status: the owned build pipeline is fully proven (build → sign → device
+  → real backend → share). Remaining Phase 3 = a PRODUCTION (app-store) build →
+  TestFlight (Nicole's final check of the exact store binary) → App Store submit
+  (Nicole-gated: publishing to real users). Then Phase 4 = adoption gate
+  (served_by NULL-rate → 0) → cancel Vibecode → rotate all secrets.
