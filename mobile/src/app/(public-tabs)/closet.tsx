@@ -10,7 +10,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, useFocusEffect } from 'expo-router';
+import { router } from 'expo-router';
 import { useFonts } from 'expo-font';
 import { CormorantGaramond_600SemiBold } from '@expo-google-fonts/cormorant-garamond';
 import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans';
@@ -26,6 +26,7 @@ import PillButton from '@/components/PillButton';
 import { ClosetItemCard, CLOSET_GRID_PADDING } from '@/components/closet/ClosetItemCard';
 import { ItemDetailSheet } from '@/components/ItemDetailSheet';
 import ConfirmModal from '@/components/ConfirmModal';
+import { useFocusForegroundRefresh } from '@/lib/hooks/useFocusForegroundRefresh';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -115,18 +116,21 @@ export default function ClosetTab() {
     }
   }, [isShopper, creatorId]);
 
-  // Re-run the count + reload the closet on every focus. This screen is a
+  // Re-run the count + reload the closet on every focus AND whenever the app
+  // returns to the foreground while this screen is focused. This screen is a
   // mounted tab, so returning from the collage builder / add flow does NOT
   // remount it — a focus effect is what refreshes "My collages"/the upgrade
   // banner after a first collage save (which doesn't change closetItems.length)
   // and reconciles the grid if a realtime event was missed while backgrounded.
-  useFocusEffect(
-    useCallback(() => {
-      if (!isShopper || !creatorId) return;
-      void refreshCollageCount();
-      useLookStore.getState().loadClosetItems(creatorId).catch(() => {});
-    }, [isShopper, creatorId, refreshCollageCount])
-  );
+  // The foreground path additionally covers an item added via the iOS Share
+  // Extension (which runs while the app is backgrounded, onto an already-focused
+  // closet) — see useFocusForegroundRefresh.
+  const refreshCloset = useCallback(() => {
+    if (!isShopper || !creatorId) return;
+    void refreshCollageCount();
+    useLookStore.getState().loadClosetItems(creatorId).catch(() => {});
+  }, [isShopper, creatorId, refreshCollageCount]);
+  useFocusForegroundRefresh(refreshCloset);
 
   const groupedItems = useMemo(() => {
     const filtered = filterClosetItems(closetItems, searchQuery, closetCategory);

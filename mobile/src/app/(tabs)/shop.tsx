@@ -27,6 +27,7 @@ import { decodeHtmlEntities } from '@/lib/decode-entities';
 import * as MediaLibrary from 'expo-media-library';
 import { savePhotoToLibrary } from '@/lib/utils/savePhotoToLibrary';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useFocusForegroundRefresh } from '@/lib/hooks/useFocusForegroundRefresh';
 import { Search, X, Archive as ArchiveIcon, Copy, Instagram, Pencil, Trash2, Share2, Check, Plus } from 'lucide-react-native';
 import PillButton from '@/components/PillButton';
 import { ActionRow } from '@/components/ActionRow';
@@ -103,6 +104,19 @@ export default function ShopScreen() {
       useLookStore.getState().loadArchivedClosetItems(creatorId);
     }
   }, [creatorId]);
+
+  // Reconcile the closet whenever this screen regains focus, or the app returns
+  // to the foreground while it's focused. The mount effect above loads once and
+  // the realtime channel below covers live edits, but an item added via the iOS
+  // Share Extension lands while the app is backgrounded — that realtime INSERT
+  // is easily missed, and this tab does not remount on a tab switch, so without
+  // this the shared item wouldn't appear until something else forced a reload.
+  // loadClosetItems is a full, idempotent refetch. See useFocusForegroundRefresh.
+  const refreshCloset = useCallback(() => {
+    if (!creatorId) return;
+    useLookStore.getState().loadClosetItems(creatorId);
+  }, [creatorId]);
+  useFocusForegroundRefresh(refreshCloset);
 
   // Realtime subscription for live closet updates (pending→complete, new inserts, deletes)
   useEffect(() => {
