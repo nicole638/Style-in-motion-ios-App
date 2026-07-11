@@ -286,3 +286,19 @@ image → commission → collection → create commissionable link, all in the s
   0.36s (37×), identical data. Popular/repeat products are now instant; commission
   + collections stay live (not cached). All BACKEND — the installed 5.6 build
   benefits with no reinstall.
+
+**2026-07-11 — Fix: Shopify/Cloudflare sites (Alo Yoga) pulled NO photos + more photos.**
+Nicole: Alo shared as "New item"/no images; wanted more photo options.
+- Root cause: Alo is Shopify behind Cloudflare. Old flow scraped the HTML page
+  first (503 blocked) and bailed to NULL before ever hitting the Shopify .json
+  gallery (which only ran inside finalize, skipped on total failure).
+- Fix: product-info now has a Shopify FAST PATH (step 0) — the storefront
+  /products/<handle>.json is the canonical source (title, price, FULL gallery)
+  and is tried before the HTML cascade. shopifyGallery.fetchShopifyProduct falls
+  back to ScrapingBee's residential proxy (scrapingbee.fetchRawViaScrapingBee,
+  render_js off) when the direct .json is Cloudflare-blocked.
+- Result: Alo "Softsculpt Precision Short Sleeve Top" → name+$78+5 imgs, 0.55s;
+  "ALO Trail" → name+$295+8 imgs. Every Shopify store now returns its full photo
+  set on the FIRST pull (answers "build out the photo options"). Amazon/non-
+  Shopify unchanged (regression-checked). Backend-only — installed build benefits
+  now; product-memory caches the good result so repeats are instant.

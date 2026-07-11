@@ -1,14 +1,16 @@
 // Shopify exposes a JSON view of every product at `<origin>/products/<handle>.json`
-// (the storefront feed). On JSON-LD-only stores the parser sees just a single
-// `image` field, even though the product page renders 5-10 photos. We hit the
-// JSON endpoint to recover the full gallery for the multi-image picker.
+// (the storefront feed) with the FULL gallery, title, and price. On JSON-LD-only
+// stores the HTML parser sees just a single `image` field even though the page
+// renders 5-10 photos, so we hit the JSON endpoint to recover the whole gallery
+// for the multi-image picker.
 //
-// Mirrors what scrape-product v13 does on the async path so the synchronous
-// /api/product-info route reaches parity on Shopify merchants (Bolsa Nova,
-// Burton Goods, Camilla Gabrieli, Los Angeles Apparel, and most modern
-// boutiques on Awin).
+// Some Shopify stores sit behind Cloudflare/Akamai (e.g. Alo Yoga) which 503s a
+// plain server fetch of the .json. In that case we retry through ScrapingBee's
+// residential proxy (render_js off, so JSON stays JSON). This makes the full
+// gallery reachable for protected Shopify merchants too.
 
 import { normalizeImageKey } from "./parseProductMetadata.ts";
+import { fetchRawViaScrapingBee } from "./scrapingbee.ts";
 
 const PRODUCTS_PATH_RE = /^\/products\/([A-Za-z0-9][A-Za-z0-9_-]*)(?:[/?#]|$)/;
 
@@ -23,23 +25,62 @@ export function extractShopifyHandle(url: string): { origin: string; handle: str
   }
 }
 
+export interface ShopifyProduct {
+  title: string | null;
+  price: string | null;
+  images: string[];
+}
+
 interface ShopifyProductJson {
   product?: {
+    title?: string | null;
     images?: Array<{ src?: string | null }> | null;
+    variants?: Array<{ price?: string | number | null }> | null;
   };
 }
 
-/**
- * Returns the list of image URLs from `<origin>/products/<handle>.json`, in the
- * order Shopify lists them. Returns [] on any failure (404, non-JSON, timeout,
- * non-Shopify response). Tolerant by design — this is enrichment-only, the
- * caller must still have a usable result if this returns nothing.
- */
-export async function fetchShopifyGalleryUrls(url: string, timeoutMs: number = 4000): Promise<string[]> {
-  const parsed = extractShopifyHandle(url);
-  if (!parsed) return [];
+function parseShopifyJson(text: string): ShopifyProduct | null {
+  let body: ShopifyProductJson;
+  try {
+    body = JSON.parse(text) as ShopifyProductJson;
+  } catch {
+    return null;
+  }
+  const p = body?.product;
+  if (!p) return null;
 
+  const images: string[] = [];
+  for (const img of p.images ?? []) {
+    const src = (img?.src ?? "").trim();
+    if (!src) continue;
+    images.push(src.startsWith("http://") ? "https://" + src.slice(7) : src);
+  }
+
+  // Price from the first variant that has one.
+  let price: string | null = null;
+  const variants = Array.isArray(p.variants) ? p.variants : [];
+  const v = variants.find((x) => x && x.price != null) ?? variants[0];
+  if (v && v.price != null) {
+    const num = parseFloat(String(v.price));
+    if (Number.isFinite(num)) price = num % 1 === 0 ? `$${num}` : `$${num.toFixed(2)}`;
+  }
+
+  const title = (p.title ?? "").trim() || null;
+  return { title, price, images };
+}
+
+/**
+ * Fetch a Shopify product's canonical data (title, price, full image gallery)
+ * from the storefront .json. Tries a direct fetch first (fast, works on
+ * unprotected stores); on block/non-JSON, retries through ScrapingBee's
+ * residential proxy. Returns null for non-Shopify URLs or on total failure.
+ */
+export async function fetchShopifyProduct(url: string, timeoutMs = 4000): Promise<ShopifyProduct | null> {
+  const parsed = extractShopifyHandle(url);
+  if (!parsed) return null;
   const target = `${parsed.origin}/products/${parsed.handle}.json`;
+
+  // 1) Direct — fast path for unprotected Shopify stores.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -52,23 +93,30 @@ export async function fetchShopifyGalleryUrls(url: string, timeoutMs: number = 4
       redirect: "follow",
     });
     clearTimeout(timer);
-    if (!res.ok) return [];
-    const ct = res.headers.get("content-type") || "";
-    if (!ct.includes("application/json")) return [];
-    const body = (await res.json()) as ShopifyProductJson;
-    const imgs = body?.product?.images ?? [];
-    const out: string[] = [];
-    for (const img of imgs) {
-      const src = (img?.src ?? "").trim();
-      if (!src) continue;
-      const https = src.startsWith("http://") ? "https://" + src.slice(7) : src;
-      out.push(https);
+    if (res.ok && (res.headers.get("content-type") || "").includes("application/json")) {
+      const parsedJson = parseShopifyJson(await res.text());
+      if (parsedJson && (parsedJson.images.length || parsedJson.title)) return parsedJson;
     }
-    return out;
   } catch {
     clearTimeout(timer);
-    return [];
   }
+
+  // 2) Fall back to ScrapingBee's residential proxy (Cloudflare/Akamai-protected
+  //    Shopify stores like Alo Yoga block the plain fetch above).
+  const raw = await fetchRawViaScrapingBee(target);
+  if (raw) {
+    const parsedJson = parseShopifyJson(raw);
+    if (parsedJson && (parsedJson.images.length || parsedJson.title)) return parsedJson;
+  }
+  return null;
+}
+
+/**
+ * Back-compat wrapper: returns just the gallery image URLs.
+ */
+export async function fetchShopifyGalleryUrls(url: string, timeoutMs = 4000): Promise<string[]> {
+  const p = await fetchShopifyProduct(url, timeoutMs);
+  return p?.images ?? [];
 }
 
 /**
@@ -80,7 +128,7 @@ export async function fetchShopifyGalleryUrls(url: string, timeoutMs: number = 4
 export function mergeGalleryIntoCandidates(
   existing: string[],
   gallery: string[],
-  max: number = 6,
+  max = 8,
 ): string[] {
   const seen = new Set<string>();
   const out: string[] = [];

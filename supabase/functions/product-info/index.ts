@@ -36,7 +36,7 @@ import {
 } from "./scrapingbee.ts";
 import { normalizeUrlInput, resolveShortUrl } from "./normalizeUrlInput.ts";
 import { cacheMerchantImage } from "./cacheMerchantImage.ts";
-import { fetchShopifyGalleryUrls, mergeGalleryIntoCandidates } from "./shopifyGallery.ts";
+import { fetchShopifyProduct, fetchShopifyGalleryUrls, mergeGalleryIntoCandidates } from "./shopifyGallery.ts";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -501,6 +501,29 @@ export async function resolveProductInfo(rawUrl: string, skipCache = false): Pro
     // merchant image URLs. The share sheet renders those directly; durable
     // caching happens at save time. This is the biggest latency win on preview.
     return skipCache ? enriched : finalizeWithCache(enriched);
+  }
+
+  // 0) Shopify fast path: the storefront .json is the canonical source (title,
+  //    price, and the FULL image gallery) and works even on Cloudflare-protected
+  //    Shopify stores (Alo Yoga etc.) via ScrapingBee's residential proxy. When
+  //    it hits we skip the slower HTML scrape cascade entirely — faster AND we
+  //    get every product photo for the picker.
+  if (!amazon) {
+    const shopify = await fetchShopifyProduct(url);
+    if (shopify && (shopify.images.length > 0 || shopify.title)) {
+      const shopResult: ProductInfoResult = {
+        ...NULL_RESULT,
+        name: cleanName(shopify.title),
+        price: shopify.price,
+        imageUrl: shopify.images[0] ?? null,
+        imageUrls: shopify.images.slice(0, 8),
+        siteName: domainFromUrl(url),
+        _source: "shopify-json",
+        _parserPath: "shopify-json",
+      };
+      console.log(`[product-info] Shopify-json succeeded (${shopify.images.length} imgs)`);
+      return withAmazonMetadata(skipCache ? shopResult : await finalizeWithCache(shopResult));
+    }
   }
 
   // 1) Explicit hardcoded list — keeps existing behavior for known retailers.

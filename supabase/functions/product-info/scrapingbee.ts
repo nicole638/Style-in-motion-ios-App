@@ -73,6 +73,41 @@ export async function fetchViaScrapingBee(url: string): Promise<string | null> {
   }
 }
 
+/**
+ * Raw ScrapingBee proxy fetch (premium residential proxy, NO render_js) — returns
+ * the upstream response body verbatim. Used to fetch JSON endpoints (e.g. a
+ * Shopify /products/<handle>.json) through a residential IP when the site's edge
+ * (Cloudflare/Akamai) blocks a plain datacenter fetch. render_js is OFF so JSON
+ * comes back as JSON rather than wrapped in a rendered HTML page.
+ */
+export async function fetchRawViaScrapingBee(url: string, timeoutMs = SB_TIMEOUT_MS): Promise<string | null> {
+  const apiKey = env.SCRAPINGBEE_API_KEY;
+  if (!apiKey) {
+    console.error('[scrapingbee-raw] SCRAPINGBEE_API_KEY not set');
+    return null;
+  }
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    url,
+    premium_proxy: 'true',
+    render_js: 'false',
+    block_ads: 'true',
+  });
+  try {
+    const res = await fetch(`https://app.scrapingbee.com/api/v1/?${params}`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      console.warn(`[scrapingbee-raw] ${res.status} for ${url}`);
+      return null;
+    }
+    return await res.text();
+  } catch (err) {
+    console.warn('[scrapingbee-raw] network error', err);
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Auto-detection of bot-blocked retailers
 // ---------------------------------------------------------------------------
