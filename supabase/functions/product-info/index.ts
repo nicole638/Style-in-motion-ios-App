@@ -458,7 +458,7 @@ async function fetchAutoScrapingBeeResult(fetchUrl: string, displayUrl: string =
  * returns the resolved ProductInfoResult (image cached via finalizeWithCache,
  * Amazon metadata attached).
  */
-export async function resolveProductInfo(rawUrl: string): Promise<ProductInfoResult> {
+export async function resolveProductInfo(rawUrl: string, skipCache = false): Promise<ProductInfoResult> {
   const url = await resolveShortUrl(rawUrl);
   if (url !== rawUrl) {
     console.log(`[product-info] Resolved short URL: ${rawUrl} -> ${url}`);
@@ -496,7 +496,11 @@ export async function resolveProductInfo(rawUrl: string): Promise<ProductInfoRes
   // cached cover at imageUrls[0] and Shopify gallery URLs follow it.
   async function finalize(result: ProductInfoResult): Promise<ProductInfoResult> {
     const enriched = amazon ? result : await enrichWithShopifyGallery(result, url);
-    return finalizeWithCache(enriched);
+    // Fast/preview mode (?cache=0): skip the storage image-cache round-trip
+    // (download every image + upload to Supabase Storage) and return raw
+    // merchant image URLs. The share sheet renders those directly; durable
+    // caching happens at save time. This is the biggest latency win on preview.
+    return skipCache ? enriched : finalizeWithCache(enriched);
   }
 
   // 1) Explicit hardcoded list — keeps existing behavior for known retailers.
@@ -951,6 +955,8 @@ Deno.serve(async (req: Request) => {
     return json({ error: { message: "url query param is required", code: "VALIDATION_ERROR" } }, 400);
   }
 
-  const result = await resolveProductInfo(normalized);
+  // ?cache=0 (or ?preview=1) skips durable image caching for a fast preview.
+  const skipCache = sp.get("cache") === "0" || sp.get("preview") === "1";
+  const result = await resolveProductInfo(normalized, skipCache);
   return json({ data: result });
 });

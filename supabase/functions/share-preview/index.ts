@@ -115,7 +115,9 @@ async function scrapeProduct(url: string): Promise<ProductPreview> {
     name: null, brand: null, price: null, images: [], primaryImage: null, siteName: null,
   };
   try {
-    const endpoint = `${SUPABASE_URL}/functions/v1/product-info?url=${encodeURIComponent(url)}`;
+    // cache=0 → fast preview: product-info returns raw merchant image URLs and
+    // skips the storage image-cache round-trip (durable caching happens at save).
+    const endpoint = `${SUPABASE_URL}/functions/v1/product-info?cache=0&url=${encodeURIComponent(url)}`;
     const res = await fetch(endpoint, {
       headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` },
       signal: AbortSignal.timeout(20000),

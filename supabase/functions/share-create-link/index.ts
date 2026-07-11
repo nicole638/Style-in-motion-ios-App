@@ -45,6 +45,64 @@ function nullableTrim(v: unknown): string | null {
   return t.length ? t : null;
 }
 
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Cache a merchant image into Supabase Storage (item-photos/cache) so the saved
+// item's photo never decays — same bucket/scheme as the app's cacheMerchantImage.
+// Runs in the background (EdgeRuntime.waitUntil) so it never slows the response.
+// Best-effort: on any failure the merchant URL just stays as-is.
+async function cacheAndUpdatePhoto(
+  supa: ReturnType<typeof createClient>,
+  itemId: string,
+  merchantUrl: string,
+): Promise<void> {
+  const BUCKET = "item-photos";
+  const PREFIX = "cache";
+  const EXT: Record<string, string> = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp" };
+  try {
+    const hash = await sha256Hex(merchantUrl);
+    // Reuse an already-cached object for this URL if present.
+    let publicUrl: string | null = null;
+    const { data: existing } = await supa.storage.from(BUCKET).list(PREFIX, { limit: 5, search: hash });
+    const hit = (existing ?? []).find((f: { name: string }) => f.name.startsWith(`${hash}.`));
+    if (hit) {
+      publicUrl = supa.storage.from(BUCKET).getPublicUrl(`${PREFIX}/${hit.name}`).data.publicUrl;
+    } else {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(merchantUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "image/webp,image/png,image/jpeg,image/*,*/*;q=0.8",
+        },
+        signal: controller.signal,
+        redirect: "follow",
+      }).finally(() => clearTimeout(timer));
+      if (!res.ok) return;
+      const ct = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      const ext = EXT[ct] ?? "jpg";
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const path = `${PREFIX}/${hash}.${ext}`;
+      const { error: upErr } = await supa.storage.from(BUCKET).upload(path, bytes, {
+        contentType: ct || `image/${ext === "jpg" ? "jpeg" : ext}`,
+        upsert: true,
+      });
+      if (upErr) return;
+      publicUrl = supa.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+    }
+    if (publicUrl && publicUrl !== merchantUrl) {
+      await supa.from("creator_items")
+        .update({ photo_url: publicUrl, original_photo_url: merchantUrl })
+        .eq("id", itemId);
+    }
+  } catch (_e) {
+    // best-effort; merchant URL stays
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return errRes("Method not allowed", "METHOD_NOT_ALLOWED", 405);
@@ -139,7 +197,16 @@ Deno.serve(async (req) => {
   // 3) Update last_used on the token (matches share-add-item).
   await supa.from("share_device_tokens").update({ last_used_at: nowIso }).eq("token", token);
 
-  // 4) The copyable commissionable link (shop-redirect stamps tag + logs click).
+  // 4) Durably cache the chosen image in the background so the response stays
+  //    fast but the saved item's photo never decays.
+  if (imageUrl) {
+    const p = cacheAndUpdatePhoto(supa, itemId, imageUrl);
+    const er = (globalThis as { EdgeRuntime?: { waitUntil?: (pr: Promise<unknown>) => void } }).EdgeRuntime;
+    if (er?.waitUntil) er.waitUntil(p);
+    else void p.catch(() => {});
+  }
+
+  // 5) The copyable commissionable link (shop-redirect stamps tag + logs click).
   const shareUrl = `${SHARE_BASE}/api/shop?creatorItemId=${encodeURIComponent(itemId)}&source=share`;
 
   return jsonRes({ data: { itemId, shareUrl, lookId } });
