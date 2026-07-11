@@ -250,3 +250,27 @@ now has a verified Supabase twin.**
   TestFlight (Nicole's final check of the exact store binary) → App Store submit
   (Nicole-gated: publishing to real users). Then Phase 4 = adoption gate
   (served_by NULL-rate → 0) → cancel Vibecode → rotate all secrets.
+
+**2026-07-11 — In-sheet share experience (Snapshop-style) BUILT.**
+Nicole chose to build the full in-sheet share flow into this release (it's the
+feature the migration was for). Reference: ShopMy "Snapshop" — scrape → pick
+image → commission → collection → create commissionable link, all in the sheet.
+- Backend (deployed v1, verify_jwt=false, tested live on the test creator):
+  - share-preview {token,url} → product (name/brand/price + up to 8 images via
+    product-info) + commission (real range from affiliate_merchants by domain, or
+    null) + creator collections (Looks). Parallel fetch.
+  - share-create-link {token,url,choices,collection} → inserts creator_items
+    (fetch_status=complete so async re-scrape won't clobber the chosen image),
+    attaches to / creates a Look, returns the shop-redirect commissionable link.
+  - Verified: Bloomingdale's→2% Rakuten; Free People→not commissionable
+    (graceful null); create→item+look+link, link 302s; test rows cleaned.
+- Native SwiftUI share extension (plugins/shareExtension/ShareViewController.swift):
+  full editor (image gallery picker, note, commission pill "Up to X% commission"
+  or "Not commissionable yet", collection Menu incl. New collection, Create Quick
+  Link → success card w/ copy). iOS 15.1-safe, typechecks clean. Endpoints
+  derived from SIM_SUPABASE_URL (no plugin change). share-add-item kept deployed
+  for OLD installs.
+- Commission requirement (Nicole): real per-brand number when in-network, calm
+  "Not commissionable yet" otherwise — never a fake number. DONE.
+- Version 5.6 / build 34. Internal test build 87c5389c building for on-device
+  test before the evening App Store push.
