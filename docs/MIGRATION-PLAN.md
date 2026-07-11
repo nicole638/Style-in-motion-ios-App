@@ -274,3 +274,15 @@ image → commission → collection → create commissionable link, all in the s
   "Not commissionable yet" otherwise — never a fake number. DONE.
 - Version 5.6 / build 34. Internal test build 87c5389c building for on-device
   test before the evening App Store push.
+
+**2026-07-11 — Share speed + "product memory" (Nicole asked to speed up the sheet).**
+- Root cause of the lag: product-info downloaded+re-uploaded every image to
+  Storage before answering. Fix: ?cache=0 fast mode (raw merchant image URLs);
+  share-preview uses it; share-create-link caches the CHOSEN image in the
+  background (EdgeRuntime.waitUntil) — tap returns 0.33s, photo still moves to
+  Storage (verified). Free People 5.4→3.9s.
+- Product memory: new share_product_cache table (URL-keyed, 7-day TTL, RLS
+  service-role only). share-preview checks it first. Cold Revolve 13.2s → warm
+  0.36s (37×), identical data. Popular/repeat products are now instant; commission
+  + collections stay live (not cached). All BACKEND — the installed 5.6 build
+  benefits with no reinstall.

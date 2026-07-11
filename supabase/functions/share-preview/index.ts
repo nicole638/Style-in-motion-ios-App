@@ -148,6 +148,49 @@ async function scrapeProduct(url: string): Promise<ProductPreview> {
   }
 }
 
+// "Product memory": cache the scraped product by URL so a repeat share of the
+// same product is instant (skips the slow re-scrape on bot-protected retailers).
+// Only the creator-agnostic product blob is cached — commission + collections
+// stay live per request.
+const PRODUCT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+async function getProduct(
+  supa: ReturnType<typeof createClient>,
+  url: string,
+): Promise<ProductPreview> {
+  // 1) Fresh cache hit → instant.
+  try {
+    const { data } = await supa
+      .from("share_product_cache")
+      .select("product, cached_at")
+      .eq("url", url)
+      .maybeSingle();
+    if (data) {
+      const row = data as { product: ProductPreview; cached_at: string };
+      const age = Date.now() - Date.parse(row.cached_at);
+      if (Number.isFinite(age) && age < PRODUCT_CACHE_TTL_MS && row.product) {
+        return row.product;
+      }
+    }
+  } catch (_e) {
+    // cache read is best-effort — fall through to a live scrape
+  }
+
+  // 2) Miss (or stale) → scrape (fast mode), then remember it if usable.
+  const product = await scrapeProduct(url);
+  const usable = !!(product.name || product.primaryImage || product.images.length);
+  if (usable) {
+    try {
+      await supa
+        .from("share_product_cache")
+        .upsert({ url, product, cached_at: new Date().toISOString() }, { onConflict: "url" });
+    } catch (_e) {
+      // best-effort; a failed write just means the next share re-scrapes
+    }
+  }
+  return product;
+}
+
 async function loadCollections(
   supa: ReturnType<typeof createClient>,
   creatorId: string,
@@ -192,9 +235,9 @@ Deno.serve(async (req) => {
   }
   const creatorId = (tok as Record<string, unknown>).creator_id as string;
 
-  // Scrape + commission + collections in parallel — the share sheet wants it fast.
+  // Product (cache-first) + commission + collections in parallel — fast sheet.
   const [product, commission, collections] = await Promise.all([
-    scrapeProduct(url),
+    getProduct(supa, url),
     lookupCommission(supa, url),
     loadCollections(supa, creatorId),
   ]);

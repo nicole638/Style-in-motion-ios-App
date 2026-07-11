@@ -61,3 +61,8 @@ ISO 27001 Annex A):
   account (domain registrar/DNS — controls styledinmotion.app + .studio).
   Registrar 2FA is a standard auditor checkpoint (domain hijack = full
   platform compromise).
+- **2026-07-11** — `share_product_cache` table added (migration
+  20260711180000) for the share extension's "product memory". RLS enabled with
+  NO anon/authenticated policies (service-role only) — RLS-first default; no
+  client can read/write it. Caches only the creator-agnostic product scrape (no
+  PII, no commission, no per-creator data).
