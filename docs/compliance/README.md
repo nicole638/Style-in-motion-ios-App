@@ -66,3 +66,14 @@ ISO 27001 Annex A):
   NO anon/authenticated policies (service-role only) — RLS-first default; no
   client can read/write it. Caches only the creator-agnostic product scrape (no
   PII, no commission, no per-creator data).
+- **2026-07-11** — Disk I/O incident + fix. A runaway pg_cron job (#79,
+  `brand-discovery-refresh-...`, created 15:12 UTC, schedule `5 seconds`) was
+  continuously running `refresh_affiliate_products_daily()` (full rebuild of the
+  1.78GB `affiliate_products` matview) back-to-back for ~6h — ~93% of all disk
+  I/O (2.2TB via pg_stat_statements). Diagnosed with pg_stat_statements ranking;
+  the app's own queries were negligible. Fix (Nicole-approved): unscheduled job
+  #79 (redundant with the legit `affiliate-products-refresh-daily` @10:30);
+  dialed `relearn-fashion` (job 16) from `*/5 * * * *` → `0 * * * *` (hourly,
+  ~12× less). No source in repo or DB creates job #79 (checked pg_proc +
+  supabase/) → one-off manual creation, not expected to recur. Reversible:
+  snapshot of both job definitions recorded in session. Watch for reappearance.
