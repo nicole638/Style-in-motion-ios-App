@@ -1,4 +1,7 @@
-// cj-feeds-sync v4 — clothing-first paginated CJ product catalog sync.
+// cj-feeds-sync v5 — clothing-first paginated CJ product catalog sync.
+// v5: preserve backfilled images on re-sync (CJ omits imageLink for some
+//     advertisers; affiliate-image-backfill fills them from the product URL, and
+//     flush() now keeps those images instead of overwriting them with []).
 // (v4: clothing keywords are single tokens chunked into groups of 10 — CJ counts
 //  whitespace/hyphen-separated tokens toward its 10-keyword cap; phase/group/offset
 //  checkpointed on cj_merchants.)
@@ -176,6 +179,26 @@ Deno.serve(async (req) => {
 
   const flush = async (): Promise<string | null> => {
     if (pageBatch.length === 0) return null;
+    // Image preservation: CJ omits imageLink for some advertisers (Avidlove,
+    // Especially Yours, ...). Those images get backfilled from the product URL
+    // by affiliate-image-backfill. Without this guard, a re-sync would overwrite
+    // the backfilled image_urls with [] again. So for any row the feed brought
+    // WITHOUT an image, reuse the existing stored image_urls (the backfill).
+    const needPreserve = pageBatch.filter((r) => (r.image_urls?.length ?? 0) === 0);
+    if (needPreserve.length > 0) {
+      const ids = needPreserve.map((r) => r.product_id_in_feed);
+      const { data: existing } = await supa.from("cj_products")
+        .select("product_id_in_feed, image_urls")
+        .eq("merchant_id", merchant.id)
+        .in("product_id_in_feed", ids);
+      const byId = new Map<string, string[]>(
+        (existing ?? []).map((e: any) => [e.product_id_in_feed, e.image_urls ?? []]),
+      );
+      for (const r of needPreserve) {
+        const ex = byId.get(r.product_id_in_feed);
+        if (ex && ex.length > 0) r.image_urls = ex;
+      }
+    }
     const { error } = await supa.from("cj_products")
       .upsert(pageBatch, { onConflict: "merchant_id,product_id_in_feed" });
     if (error) return `upsert: ${error.message.slice(0, 200)}`;
