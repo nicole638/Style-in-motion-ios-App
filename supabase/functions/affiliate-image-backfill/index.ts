@@ -29,7 +29,8 @@ function jsonRes(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
-const CONCURRENCY = 4;
+const CONCURRENCY = 2;      // gentle — merchant sites rate-limit bursts
+const PER_ITEM_DELAY_MS = 350;
 const MAX_IMAGES = 6;
 
 async function fetchImages(url: string): Promise<string[]> {
@@ -91,6 +92,7 @@ Deno.serve(async (req) => {
         merchant_id: string; product_id_in_feed: string; product_url: string;
       };
       processed++;
+      await new Promise((r) => setTimeout(r, PER_ITEM_DELAY_MS));
       const imgs = await fetchImages(row.product_url);
       if (sample.length < 5) sample.push({ url: row.product_url.slice(0, 60), images: imgs.length });
       if (imgs.length === 0) { stillEmpty++; continue; }
