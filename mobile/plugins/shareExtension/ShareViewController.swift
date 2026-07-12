@@ -145,6 +145,7 @@ private enum Phase: Equatable {
   case loading
   case needsSignIn
   case editing
+  case emptyProduct     // scrape returned nothing usable — offer Retry / Add anyway
   case creating
   case done(String)     // share link
   case failed(String)   // message
@@ -189,7 +190,10 @@ struct ShareRootView: View {
   }
 
   private var canDismissByTap: Bool {
-    switch phase { case .loading, .editing, .needsSignIn, .failed: return true; default: return false }
+    switch phase {
+    case .loading, .editing, .needsSignIn, .failed, .emptyProduct: return true
+    default: return false
+    }
   }
 
   // MARK: phases
@@ -200,7 +204,11 @@ struct ShareRootView: View {
     case .needsSignIn:  messageCard(title: "Sign in first",
                                     body: "Open Styled in Motion and sign in, then share again.",
                                     icon: "person.crop.circle")
-    case .failed(let m): messageCard(title: "Couldn't load", body: m, icon: "exclamationmark.triangle")
+    case .failed(let m): messageCard(title: "Couldn't load", body: m,
+                                     icon: "exclamationmark.triangle", showRetry: true)
+    case .emptyProduct: messageCard(title: "Couldn't read this product",
+                                    body: "The link still works. Retry, or add it as-is and edit in the app.",
+                                    icon: "photo.on.rectangle", showRetry: true, showAddAnyway: true)
     case .editing, .creating: editor
     case .done(let link): successCard(link: link)
     }
@@ -216,14 +224,36 @@ struct ShareRootView: View {
     .padding(.top, 12).padding(.bottom, 40)
   }
 
-  private func messageCard(title: String, body: String, icon: String) -> some View {
+  private func messageCard(
+    title: String,
+    body: String,
+    icon: String,
+    showRetry: Bool = false,
+    showAddAnyway: Bool = false
+  ) -> some View {
     VStack(spacing: 12) {
       grabber
       Image(systemName: icon).font(.system(size: 30)).foregroundColor(Brand.coral)
       Text(title).font(.system(size: 18, weight: .bold)).foregroundColor(Brand.ink)
       Text(body).font(.system(size: 14)).foregroundColor(Brand.muted)
         .multilineTextAlignment(.center).padding(.horizontal, 24)
-      Button(action: onClose) { pillLabel("Done", filled: true) }.padding(.top, 4)
+      VStack(spacing: 10) {
+        if showRetry {
+          Button(action: retry) { pillLabel("Retry", filled: true) }
+        }
+        if showAddAnyway {
+          Button { phase = .editing } label: { pillLabel("Add anyway", filled: false) }
+        }
+        if !showRetry && !showAddAnyway {
+          Button(action: onClose) { pillLabel("Done", filled: true) }
+        } else {
+          Button(action: onClose) {
+            Text("Cancel").font(.system(size: 15, weight: .medium)).foregroundColor(Brand.muted)
+              .padding(.vertical, 8)
+          }
+        }
+      }
+      .padding(.top, 4)
     }
     .frame(maxWidth: .infinity).padding(.top, 12).padding(.bottom, 36).padding(.horizontal, 16)
   }
@@ -447,6 +477,17 @@ struct ShareRootView: View {
 
   // MARK: networking
 
+  private func retry() {
+    didCopy = false
+    phase = .loading
+    start()
+  }
+
+  // A scrape that came back with nothing usable — no name, no images, no price.
+  private func productIsEmpty(_ p: Product) -> Bool {
+    return (p.name?.isEmpty ?? true) && p.images.isEmpty && (p.price?.isEmpty ?? true)
+  }
+
   private func start() {
     guard let token = token, !token.isEmpty else { phase = .needsSignIn; return }
     guard let url = sharedURL, url.hasPrefix("http") else { phase = .failed("Couldn't read the shared link."); return }
@@ -471,7 +512,7 @@ struct ShareRootView: View {
           self.commission = d.commission
           self.collections = d.collections
           self.selectedImage = d.product.primaryImage ?? d.product.images.first
-          self.phase = .editing
+          self.phase = self.productIsEmpty(d.product) ? .emptyProduct : .editing
         }
       } else {
         await MainActor.run { self.phase = .failed(decoded.error?.message ?? "Couldn't read this product.") }

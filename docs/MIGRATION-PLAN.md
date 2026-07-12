@@ -302,3 +302,16 @@ Nicole: Alo shared as "New item"/no images; wanted more photo options.
   set on the FIRST pull (answers "build out the photo options"). Amazon/non-
   Shopify unchanged (regression-checked). Backend-only — installed build benefits
   now; product-memory caches the good result so repeats are instant.
+
+**2026-07-11 — Share sheet resilience + backup + final build prep.**
+- Color mismatch (Alo black→blue): NOT a bug — verified each Alo color URL scrapes
+  its correct color. Alo's swatches change the on-screen photo without changing the
+  page URL, so a swatch-selected color isn't in the shared link (confirmed in
+  browser: clicking a swatch left address bar/canonical unchanged). Inherent to
+  URL-based sharing (same for ShopMy/LTK). Guidance: share from the color's own page.
+- Added a Retry affordance: scrape that returns nothing usable → .emptyProduct state
+  with Retry + "Add anyway" (link still works); network failure card also gets Retry.
+  So a rare empty pull is never a dead end. iOS 15.1-safe, typechecks clean.
+- Durable backup taken: ~/Documents/styled-in-motion-edits/2026-07-11-pre-final-build/
+  (full repo tgz + manifest, 1748 entries, integrity-checked).
+- Build 5.6 (34→35) for the final App Store build.
