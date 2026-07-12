@@ -315,3 +315,11 @@ Nicole: Alo shared as "New item"/no images; wanted more photo options.
 - Durable backup taken: ~/Documents/styled-in-motion-edits/2026-07-11-pre-final-build/
   (full repo tgz + manifest, 1748 entries, integrity-checked).
 - Build 5.6 (34→35) for the final App Store build.
+
+**2026-07-11 — 5.6 (build 35) UPLOADED to App Store Connect / TestFlight.**
+- Production build 86dd1706 verified: app-store signing (get-task-allow=false, no
+  ProvisionedDevices), app group in both targets, 5.6(35), backend=api.styledinmotion.app
+  (0 vibecode refs), new features present (Retry/share-preview/share-create-link).
+- Nicole authorized "Upload to TestFlight first". eas submit → App Store Connect
+  (submission 13e0dec0), processing on Apple's side. Public "Submit for Review"
+  remains Nicole-gated after she TestFlight-tests the exact store binary.
