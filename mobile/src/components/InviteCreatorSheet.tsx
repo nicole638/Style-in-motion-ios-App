@@ -27,8 +27,12 @@ interface InviteCreatorSheetProps {
   testIDPrefix?: string;
 }
 
+// The creator referral link. This pointed at styledinmotion.studio/join — an apex
+// domain with NO DNS record — so every invite we have ever sent was unreachable and
+// the referral programme could not convert a single creator. The signup page is real
+// and live at studio.styledinmotion.studio/join ("Become a Styled in Motion creator").
 function buildReferralUrl(code: string): string {
-  return `https://styledinmotion.studio/join?ref=${encodeURIComponent(code)}`;
+  return `https://studio.styledinmotion.studio/join?ref=${encodeURIComponent(code)}`;
 }
 
 function buildShareMessage(code: string, url: string): string {

@@ -404,7 +404,13 @@ export default function BrandCatalogScreen() {
     return key ? closetUrlSet.has(key) : false;
   }, [closetUrlSet]);
 
-  const clickThroughUrl = merchant?.clickThroughUrl ?? null;
+  // Every brand page must offer a way into the brand's site — that is the only
+  // thing the 62 merchants with no product catalog can offer at all. A handful
+  // of merchants have no affiliate click-through URL, which used to hide the
+  // button entirely; fall back to their plain domain so the link is always there.
+  const clickThroughUrl =
+    merchant?.clickThroughUrl ??
+    (merchant?.domain ? `https://${merchant.domain.replace(/^https?:\/\//, '')}` : null);
   const handleVisitWebsite = useCallback(async () => {
     if (!clickThroughUrl) return;
     try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch {}
@@ -665,11 +671,30 @@ export default function BrandCatalogScreen() {
             <View style={styles.emptyCard} testID="merchant-empty-state">
               <Text style={styles.emptyEmoji}>{`\uD83D\uDECD\uFE0F`}</Text>
               <Text style={styles.emptyCardTitle}>
-                {`${merchant.name} catalog isn't synced yet.`}
+                {`Shop ${merchant.name} directly`}
               </Text>
               <Text style={styles.emptyCardBody}>
-                {`Tap 'Visit website' above to browse their site right here, then tap 'Add to Closet' on any piece you love — we'll pull in the details for you.`}
+                {`We haven't synced ${merchant.name}'s catalog yet — but you can browse their site right here and tap 'Add to Closet' on anything you love. We'll pull in the details and your link.`}
               </Text>
+              {/* 62 of our 145 brands have no synced catalog. Rather than an empty
+                  grid plus a note pointing at a button further up the page, these
+                  pages LEAD with the one action that actually works. */}
+              {clickThroughUrl ? (
+                <Pressable
+                  onPress={handleVisitWebsite}
+                  className="bg-[#B87063] rounded-full py-3.5 px-5 flex-row items-center justify-center active:opacity-85 mt-4"
+                  style={{ shadowColor: '#1A1210', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 }}
+                  testID="brand-empty-browse"
+                >
+                  <ExternalLink size={16} color="#FFFFFF" />
+                  <Text
+                    className="ml-2 text-white text-[15px] font-semibold"
+                    style={{ fontFamily: 'DMSans_500Medium' }}
+                  >
+                    {`Browse ${merchant.name}`}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : (
             <View style={styles.loading}>

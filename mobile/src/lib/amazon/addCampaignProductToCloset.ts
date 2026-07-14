@@ -45,12 +45,15 @@ export async function addAmazonCampaignProductToCloset(args: {
 
   // Tracked URL preference order:
   //   1. campaign.asin_links[targetAsin] (carries the campaign linkId)
-  //   2. campaign.shop_url
-  //   3. the override's product_url
-  //   4. a plain dp link as last resort
+  //   2. the override's product_url
+  //   3. a plain dp link as last resort
+  //
+  // campaign.shop_url is deliberately NOT in this chain. It is the campaign's
+  // STOREFRONT, not a product page — when a campaign had no per-ASIN link it
+  // used to win over the real product URL, so the creator's closet item pointed
+  // at a brand shop instead of the piece she actually picked.
   const trackedUrl =
     campaign?.asin_links?.[targetAsin] ??
-    campaign?.shop_url ??
     product?.product_url ??
     `https://www.amazon.com/dp/${targetAsin}`;
 
@@ -67,6 +70,15 @@ export async function addAmazonCampaignProductToCloset(args: {
     'Amazon product';
   const brand = campaign?.brand_name ?? 'Amazon';
 
+  // Only claim 'complete' when we genuinely have BOTH a real product name and a
+  // photo. The scrape trigger fires only on fetch_status='pending' — so an item
+  // inserted as 'complete' is never scraped. Campaign products with no image
+  // (or only the generic brand name) were therefore landing in the closet blank
+  // and staying blank forever, forcing creators to re-add the link by hand.
+  // Marking them 'pending' lets scrape-product fill in name, photo and price.
+  const hasRealName = Boolean(product?.product_name ?? (featuredMatchesTarget ? campaign?.featured?.title : null));
+  const isComplete = Boolean(photo) && hasRealName;
+
   const insertPayload: Record<string, unknown> = {
     creator_id: creatorId,
     name,
@@ -78,7 +90,7 @@ export async function addAmazonCampaignProductToCloset(args: {
     affiliate_url: trackedUrl,
     affiliate_provider: 'amazon',
     affiliate_wrapped_at: new Date().toISOString(),
-    fetch_status: 'complete',
+    fetch_status: isComplete ? 'complete' : 'pending',
     archived: false,
     alternates: [],
   };

@@ -13,6 +13,7 @@ import { useActiveAmazonCampaigns, type AmazonCampaign } from '@/lib/queries/ama
 import { useProductInfoByAsins, type ProductInfoByAsin } from '@/lib/queries/productInfoByAsins';
 import { addAmazonCampaignProductToCloset } from '@/lib/amazon/addCampaignProductToCloset';
 import { CampaignProductSheet } from '@/components/CampaignProductSheet';
+import AmazonBrowse from '@/components/AmazonBrowse';
 import useAuthStore from '@/lib/state/authStore';
 import useContextStore from '@/lib/state/contextStore';
 
@@ -93,12 +94,13 @@ function CampaignCard({
 }: {
   campaign: AmazonCampaign;
   addState: AddState;
-  onAdd: () => void;
+  onAdd: (sel: SelectedCampaignProduct) => void;
   onSelectProduct: (sel: SelectedCampaignProduct) => void;
 }) {
   const cd = daysLeft(campaign.end_date);
   const initial = (campaign.brand_name?.[0] ?? '?').toUpperCase();
   const productCount = campaign.asins.length;
+  const featuredAsin: string | undefined = campaign.asins[0];
   const previewAsins = campaign.asins.slice(0, PRODUCTS_PREVIEW);
   const productQuery = useProductInfoByAsins(previewAsins);
   const productMap = productQuery.data ?? new Map<string, ProductInfoByAsin>();
@@ -153,14 +155,27 @@ function CampaignCard({
             <Text style={styles.productsLabel}>
               {previewAsins.length === 1 ? 'Featured product' : 'Featured products'}
             </Text>
+            {/* A campaign is a BUNDLE of products. This button adds the featured
+                one (asins[0]) — so when there are several, say so. It used to
+                read a bare "Add" above a list of products, which every creator
+                reasonably read as "add the one I'm looking at": you'd tap it
+                next to a shirt and get the campaign's featured denim shorts.
+                Tap any product row below to add that specific piece instead. */}
             <PillButton
-              label={addState === 'added' ? 'Added' : 'Add'}
+              label={addState === 'added' ? 'Added' : productCount > 1 ? 'Add featured' : 'Add'}
               variant="outline"
               size="sm"
               loading={addState === 'adding'}
-              disabled={addState === 'adding' || addState === 'added'}
+              disabled={addState === 'adding' || addState === 'added' || !featuredAsin}
               icon={addState === 'added' ? <Check size={14} color="#B87063" strokeWidth={2.5} /> : <Plus size={14} color="#B87063" />}
-              onPress={onAdd}
+              onPress={() => {
+                if (!featuredAsin) return;
+                onAdd({
+                  asin: featuredAsin,
+                  product: productMap.get(featuredAsin) ?? null,
+                  brandName: campaign.brand_name,
+                });
+              }}
               testID={`amazon-campaign-add-${campaign.id}`}
             />
           </View>
@@ -211,7 +226,7 @@ export default function AmazonCampaignsScreen() {
   }, []);
 
   const handleAdd = useCallback(
-    async (campaign: AmazonCampaign) => {
+    async (campaign: AmazonCampaign, sel: SelectedCampaignProduct) => {
       if (!creatorId) {
         showToast('Sign in to add items');
         return;
@@ -221,7 +236,23 @@ export default function AmazonCampaignsScreen() {
       // Add to the active context's closet (brand storefront when in storefront
       // mode, otherwise the human's own closet).
       const writeAs = useContextStore.getState().getWriteAsCreatorId() ?? creatorId;
-      const res = await addAmazonCampaignProductToCloset({ campaign, creatorId: writeAs });
+      // Pass the ASIN explicitly, plus whatever metadata we already resolved for
+      // it. Omitting these made the helper fall back to campaign.asins[0] and to
+      // the campaign-level image, which is how a creator ended up with a product
+      // she never picked.
+      const res = await addAmazonCampaignProductToCloset({
+        campaign,
+        creatorId: writeAs,
+        asin: sel.asin,
+        product: sel.product
+          ? {
+              asin: sel.asin,
+              product_name: sel.product.product_name ?? null,
+              image_url: sel.product.image_url ?? null,
+              product_url: sel.product.product_url ?? `https://www.amazon.com/dp/${sel.asin}`,
+            }
+          : undefined,
+      });
       if (res.ok) {
         setAddStates((s) => ({ ...s, [campaign.id]: 'added' }));
         try { await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
@@ -262,8 +293,8 @@ export default function AmazonCampaignsScreen() {
       </View>
 
       <View style={styles.header}>
-        <Text style={styles.title}>Amazon Bonus Campaigns</Text>
-        <Text style={styles.subtitle}>Brands running boosted commission on select items</Text>
+        <Text style={styles.title}>Amazon</Text>
+        <Text style={styles.subtitle}>Browse Amazon and add anything straight to your closet</Text>
       </View>
 
       <FlatList
@@ -274,10 +305,19 @@ export default function AmazonCampaignsScreen() {
           <CampaignCard
             campaign={item}
             addState={addStates[item.id] ?? 'idle'}
-            onAdd={() => handleAdd(item)}
+            onAdd={(sel) => handleAdd(item, sel)}
             onSelectProduct={handleSelectProduct}
           />
         )}
+        ListHeaderComponent={
+          <View>
+            <AmazonBrowse />
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Bonus campaigns</Text>
+              <Text style={styles.sectionSub}>Brands running boosted commission on select items</Text>
+            </View>
+          </View>
+        }
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 80 + insets.bottom, gap: 12 }}
         ListEmptyComponent={
           isLoading ? (
@@ -332,6 +372,21 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 20,
     paddingBottom: 16,
+  },
+  sectionHeader: {
+    marginTop: 22,
+    marginBottom: 2,
+  },
+  sectionTitle: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 21,
+    color: '#1A1210',
+  },
+  sectionSub: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#6B5E58',
+    marginTop: 2,
   },
   title: {
     fontFamily: 'CormorantGaramond_600SemiBold',

@@ -130,8 +130,9 @@ export default function PrivacyPolicyScreen() {
 
         <View style={styles.divider} />
 
+        {/* www.styledinmotion.app/privacy is a 404 — the policy lives on the shop site. */}
         <Text style={styles.footerNote}>
-          This policy is also available at https://www.styledinmotion.app/privacy.
+          This policy is also available at https://shop.styledinmotion.studio/privacy.
         </Text>
       </ScrollView>
     </SafeAreaView>

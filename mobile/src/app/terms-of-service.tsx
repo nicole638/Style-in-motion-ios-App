@@ -119,8 +119,9 @@ export default function TermsOfServiceScreen() {
 
         <View style={styles.divider} />
 
+        {/* www.styledinmotion.app/terms is a 404 — the terms live on the shop site. */}
         <Text style={styles.footerNote}>
-          These terms are also available at https://www.styledinmotion.app/terms.
+          These terms are also available at https://shop.styledinmotion.studio/terms.
         </Text>
       </ScrollView>
     </SafeAreaView>

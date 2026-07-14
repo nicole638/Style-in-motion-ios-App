@@ -25,9 +25,12 @@ import { useCreatorStats } from '@/lib/queries/creatorStats';
 const HIDE_AFTER_DAYS = 30;
 const HIDE_AFTER_CLICKS = 10;
 
-// Spec calls for a public web URL like styledinmotion.studio/{username}.
+// The creator's public closet. This used to build styledinmotion.studio/{username}
+// from the original spec — but that apex domain has NO DNS record and never has,
+// so every creator who shared her profile handed out a link that could not even
+// resolve. The page is real and live at shop.styledinmotion.studio/creator/{username}.
 function buildProfileShareUrl(username: string): string {
-  return `https://styledinmotion.studio/${encodeURIComponent(username)}`;
+  return `https://shop.styledinmotion.studio/creator/${encodeURIComponent(username)}`;
 }
 
 export function PerformanceCard() {
