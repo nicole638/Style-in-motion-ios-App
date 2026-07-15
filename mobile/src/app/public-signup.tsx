@@ -22,6 +22,8 @@ import * as WebBrowser from 'expo-web-browser';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import useAuthStore from '@/lib/state/authStore';
 import ForgotPasswordModal from '@/components/ForgotPasswordModal';
+import { DateOfBirthField } from '@/components/DateOfBirthField';
+import { isOldEnoughToSignUp, MIN_SIGNUP_AGE } from '@/lib/age';
 
 // Shopper Terms of Service — opened in an in-app Safari view, mirroring the
 // creator signup's agreement link.
@@ -44,6 +46,8 @@ export default function PublicSignupScreen() {
   // Required ToS acceptance — blocks "Join Free" until checked. Acceptance is
   // recorded server-side via signUp metadata (agreement_* in signupAsPublic).
   const [agreementAccepted, setAgreementAccepted] = useState<boolean>(false);
+  // Age gate — must be 16+ (Apple UGC / under-13 rule).
+  const [signupDob, setSignupDob] = useState<string | null>(null);
 
   // Login fields
   const [loginEmail, setLoginEmail] = useState<string>('');
@@ -94,10 +98,13 @@ export default function PublicSignupScreen() {
   const signupEmailEmpty = !signupEmail.trim();
   const signupPasswordEmpty = signupPassword.length === 0;
   const signupPasswordTooShort = signupPassword.length > 0 && signupPassword.length < 6;
+  const signupUnderage = !signupDob || !isOldEnoughToSignUp(signupDob);
   const isSignupDisabled =
     signupFirstNameEmpty ||
     signupEmailEmpty ||
     signupPassword.length < 6 ||
+    // Must be 16+ with a complete, valid DOB.
+    signupUnderage ||
     // ToS must be accepted before signup is allowed.
     !agreementAccepted;
 
@@ -116,6 +123,8 @@ export default function PublicSignupScreen() {
         setError('Please enter your email');
       } else if (signupPasswordEmpty || signupPasswordTooShort) {
         setError('Password must be at least 6 characters');
+      } else if (signupUnderage) {
+        setError(`You must be at least ${MIN_SIGNUP_AGE} to create an account.`);
       } else if (!agreementAccepted) {
         setError('Please agree to the Terms of Service to continue.');
       }
@@ -137,10 +146,15 @@ export default function PublicSignupScreen() {
         signupFirstName.trim(),
         signupLastName.trim(),
         signupEmail.trim(),
-        signupPassword
+        signupPassword,
+        signupDob ?? ''
       );
 
       switch (result) {
+        case 'underage':
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          setError(`You must be at least ${MIN_SIGNUP_AGE} to create an account.`);
+          break;
         case 'success':
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           router.replace('/(public-tabs)/feed' as any);
@@ -304,6 +318,17 @@ export default function PublicSignupScreen() {
             testID="signup-last-name-input"
           />
         </View>
+      </View>
+
+      {/* Age gate — must be 16+. */}
+      <View style={styles.inputContainer}>
+        <DateOfBirthField
+          onChange={(iso) => { setSignupDob(iso); setError(''); }}
+          error={signupDob && !isOldEnoughToSignUp(signupDob)
+            ? `You must be at least ${MIN_SIGNUP_AGE} to create an account.`
+            : null}
+          testID="signup-dob"
+        />
       </View>
 
       {/* Email */}
