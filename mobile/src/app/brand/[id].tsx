@@ -23,6 +23,7 @@ import useAwinMerchantsStore, { type AwinMerchant } from '@/lib/state/awinMercha
 import {
   useAwinProductsByMerchant,
   useBrandDepartments,
+  useBrandSubcategories,
   type AwinProduct,
   type BrandDepartment,
 } from '@/lib/queries/awinProducts';
@@ -231,6 +232,54 @@ function DepartmentChipsRow({
   );
 }
 
+// Second-level chips (Clothing → Dresses / Tops / Jeans). Shown only when a
+// department is selected and it has subcategories. Lighter/coral-accented so it
+// reads as a sub-level of the dark department chips above it.
+function SubcategoryChipsRow({
+  subcategories,
+  selected,
+  onSelect,
+}: {
+  subcategories: { subcategory: string; count: number }[];
+  selected: string | null;
+  onSelect: (sub: string | null) => void;
+}) {
+  if (subcategories.length === 0) return null;
+  return (
+    <View style={styles.subChipsWrap} testID="brand-subcategory-chips">
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.chipsScrollContent}
+        style={styles.chipsScroll}
+      >
+        <Pressable
+          onPress={() => onSelect(null)}
+          style={[styles.subChip, selected === null && styles.subChipActive]}
+          testID="brand-subcategory-chip-all"
+        >
+          <Text style={[styles.subChipText, selected === null && styles.subChipTextActive]}>All</Text>
+        </Pressable>
+        {subcategories.map((s) => {
+          const active = selected === s.subcategory;
+          return (
+            <Pressable
+              key={s.subcategory}
+              onPress={() => onSelect(active ? null : s.subcategory)}
+              style={[styles.subChip, active && styles.subChipActive]}
+              testID={`brand-subcategory-chip-${s.subcategory.toLowerCase().replace(/\s+/g, '-')}`}
+            >
+              <Text style={[styles.subChipText, active && styles.subChipTextActive]}>
+                {`${s.subcategory} (${s.count.toLocaleString()})`}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
 function ProductTile({
   product,
   adding,
@@ -360,16 +409,24 @@ export default function BrandCatalogScreen() {
 
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null);
+  const [selectedDepartment, setSelectedDepartmentRaw] = useState<string | null>(null);
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
+  // Changing (or clearing) the department always resets the second-level filter.
+  const setSelectedDepartment = useCallback((dept: string | null) => {
+    setSelectedDepartmentRaw(dept);
+    setSelectedSubcategory(null);
+  }, []);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
 
-  const productsQuery = useAwinProductsByMerchant(merchantId, debouncedSearch, selectedDepartment);
+  const productsQuery = useAwinProductsByMerchant(merchantId, debouncedSearch, selectedDepartment, selectedSubcategory);
   const offersQuery = useAwinOffersByMerchant(merchantId);
   const departmentsQuery = useBrandDepartments(merchantId);
   const departments = departmentsQuery.data ?? [];
+  const subcategoriesQuery = useBrandSubcategories(merchantId, selectedDepartment);
+  const subcategories = subcategoriesQuery.data ?? [];
   const startersQuery = useBrandStarterPicks(merchantId, 12);
   const starterPicks = startersQuery.data ?? [];
 
@@ -612,6 +669,13 @@ export default function BrandCatalogScreen() {
               selected={selectedDepartment}
               onSelect={setSelectedDepartment}
             />
+            {selectedDepartment !== null ? (
+              <SubcategoryChipsRow
+                subcategories={subcategories}
+                selected={selectedSubcategory}
+                onSelect={setSelectedSubcategory}
+              />
+            ) : null}
             <View style={styles.searchWrap}>
               <View style={styles.searchBar}>
                 <Search size={18} color="#8C8580" strokeWidth={2} />
@@ -827,6 +891,31 @@ const styles = StyleSheet.create({
   chipsWrap: {
     paddingTop: 4,
     paddingBottom: 10,
+  },
+  // Second-level chips — smaller, coral-accented, sit just under the dept row.
+  subChipsWrap: {
+    paddingTop: 0,
+    paddingBottom: 10,
+  },
+  subChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#FBF6EF',
+    borderWidth: 1,
+    borderColor: '#EADFD5',
+  },
+  subChipActive: {
+    backgroundColor: '#B87063',
+    borderColor: '#B87063',
+  },
+  subChipText: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 12,
+    color: '#6B5E58',
+  },
+  subChipTextActive: {
+    color: '#FFFFFF',
   },
   chipsScroll: {
     flexGrow: 0,

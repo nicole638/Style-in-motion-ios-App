@@ -29,6 +29,11 @@ export interface BrandDepartment {
   count: number;
 }
 
+export interface BrandSubcategory {
+  subcategory: string;
+  count: number;
+}
+
 function rowToProduct(row: any, fallbackMerchantId?: string): AwinProduct {
   return {
     id: String(row.id),
@@ -65,12 +70,14 @@ export function useAwinProductsByMerchant(
   merchantId: string | null | undefined,
   query?: string,
   department?: string | null,
+  subcategory?: string | null,
 ) {
   const trimmed = (query ?? '').trim().toLowerCase();
   const search = trimmed.length > 0 ? trimmed : null;
   const dept = department && department.length > 0 ? department : null;
+  const subcat = subcategory && subcategory.length > 0 ? subcategory : null;
   return useInfiniteQuery({
-    queryKey: ['awin', 'products', 'byMerchant', merchantId ?? '', dept, search],
+    queryKey: ['awin', 'products', 'byMerchant', merchantId ?? '', dept, subcat, search],
     enabled: !!merchantId,
     initialPageParam: 0,
     queryFn: async ({ pageParam }) => {
@@ -81,6 +88,7 @@ export function useAwinProductsByMerchant(
         p_search: search,
         p_limit: PAGE_SIZE,
         p_offset: offset,
+        p_subcategory: subcat,
       });
       if (error) {
         console.warn('[useAwinProductsByMerchant] error:', error.message);
@@ -115,6 +123,38 @@ export function useBrandDepartments(merchantId: string | null | undefined) {
           count: Number(row.count ?? 0),
         }))
         .filter((d: BrandDepartment) => d.department.length > 0);
+    },
+    staleTime: 1000 * 60 * 10,
+  });
+}
+
+/**
+ * Second-level (subcategory) chips for a selected department, e.g. Clothing →
+ * Dresses / Tops / Jeans. Disabled until a department is chosen.
+ */
+export function useBrandSubcategories(
+  merchantId: string | null | undefined,
+  department: string | null | undefined,
+) {
+  const dept = department && department.length > 0 ? department : null;
+  return useQuery({
+    queryKey: ['awin', 'brandSubcategories', merchantId ?? '', dept ?? ''],
+    enabled: !!merchantId && !!dept,
+    queryFn: async (): Promise<BrandSubcategory[]> => {
+      const { data, error } = await supabase.rpc('get_brand_subcategories', {
+        p_merchant_id: merchantId,
+        p_department: dept,
+      });
+      if (error) {
+        console.warn('[useBrandSubcategories] error:', error.message);
+        throw error;
+      }
+      return (data ?? [])
+        .map((row: any) => ({
+          subcategory: String(row.subcategory ?? ''),
+          count: Number(row.count ?? 0),
+        }))
+        .filter((s: BrandSubcategory) => s.subcategory.length > 0);
     },
     staleTime: 1000 * 60 * 10,
   });
