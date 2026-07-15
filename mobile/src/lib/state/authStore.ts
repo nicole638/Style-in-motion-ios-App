@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { AppState, type AppStateStatus } from 'react-native';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
+import { isOldEnoughToSignUp } from '@/lib/age';
 import useLikeStore from '@/lib/state/likeStore';
 import useContextStore from '@/lib/state/contextStore';
 import useFollowStore from '@/lib/state/followStore';
@@ -37,8 +38,8 @@ interface AuthState {
   // an idempotent creators row tagged account_type='shopper'. Sets creatorId +
   // accountType WITHOUT changing userType, then hydrates the closet slice.
   ensureShopperCloset: () => Promise<{ success: boolean; creatorId?: string; error?: string }>;
-  signupAsPublic: (firstName: string, lastName: string, email: string, password: string) => Promise<'success' | 'invalid_name' | 'confirm_email' | SignupOutcome>;
-  signupAsCreator: (firstName: string, lastName: string, email: string, password: string) => Promise<'success' | 'invalid_name' | 'confirm_email' | SignupOutcome>;
+  signupAsPublic: (firstName: string, lastName: string, email: string, password: string, birthDate: string) => Promise<'success' | 'invalid_name' | 'confirm_email' | 'underage' | SignupOutcome>;
+  signupAsCreator: (firstName: string, lastName: string, email: string, password: string, birthDate: string) => Promise<'success' | 'invalid_name' | 'confirm_email' | 'underage' | SignupOutcome>;
   verifySignupOtp: (email: string, token: string) => Promise<'success' | 'invalid_code' | 'expired' | 'error'>;
   resendSignupOtp: (email: string) => Promise<boolean>;
   loginAsPublic: (email: string, password: string) => Promise<'success' | LoginOutcome>;
@@ -135,7 +136,7 @@ const useAuthStore = create<AuthState>()((set) => ({
     }
   },
 
-  signupAsPublic: async (firstName, lastName, email, password) => {
+  signupAsPublic: async (firstName, lastName, email, password, birthDate) => {
     try {
       // First name is required. Last name is optional (many creators are
       // mononyms — Latoya, Sylvia, Megan, Kerri, ReillyRose_Styles). Persist
@@ -147,11 +148,17 @@ const useAuthStore = create<AuthState>()((set) => ({
       }
       const lastOrNull: string | null = trimmedLast.length > 0 ? trimmedLast : null;
       const name = trimmedLast.length > 0 ? `${trimmedFirst} ${trimmedLast}` : trimmedFirst;
+      // Age gate (16+). The signup screen already blocks under-16, but re-check
+      // here so no caller can bypass it.
+      if (!isOldEnoughToSignUp(birthDate)) {
+        return 'underage';
+      }
       const metadata = {
         name,
         first_name: trimmedFirst,
         last_name: lastOrNull,
         user_type: 'audience' as const,
+        birth_date: birthDate,
         // Shopper Terms of Service acceptance — recorded server-side by the
         // signup trigger (writes terms_accepted_at/version/source to
         // audience_accounts). The shopper signup screen requires the acceptance
@@ -182,11 +189,11 @@ const useAuthStore = create<AuthState>()((set) => ({
             // Email confirmation is enabled and the user must confirm first
             return 'confirm_email';
           }
-          await supabase.from('audience_accounts').insert({ id: data.user.id, email, name, first_name: trimmedFirst, last_name: lastOrNull });
+          await supabase.from('audience_accounts').insert({ id: data.user.id, email, name, first_name: trimmedFirst, last_name: lastOrNull, birth_date: birthDate });
           set({ isLoggedIn: true, userType: 'audience', publicUser: { name, email } });
           return 'success';
         }
-        await supabase.from('audience_accounts').insert({ id: data.user.id, email, name, first_name: trimmedFirst, last_name: lastOrNull });
+        await supabase.from('audience_accounts').insert({ id: data.user.id, email, name, first_name: trimmedFirst, last_name: lastOrNull, birth_date: birthDate });
         set({ isLoggedIn: true, userType: 'audience', publicUser: { name, email } });
       }
       return 'success';
@@ -196,7 +203,7 @@ const useAuthStore = create<AuthState>()((set) => ({
     }
   },
 
-  signupAsCreator: async (firstName, lastName, email, password) => {
+  signupAsCreator: async (firstName, lastName, email, password, birthDate) => {
     try {
       // First name is required; last name is optional (mononyms are common).
       const trimmedFirst = firstName.trim();
@@ -206,11 +213,17 @@ const useAuthStore = create<AuthState>()((set) => ({
       }
       const lastOrNull: string | null = trimmedLast.length > 0 ? trimmedLast : null;
       const name = trimmedLast.length > 0 ? `${trimmedFirst} ${trimmedLast}` : trimmedFirst;
+      // Age gate (16+). The signup screen already blocks under-16, but re-check
+      // here so no caller can bypass it.
+      if (!isOldEnoughToSignUp(birthDate)) {
+        return 'underage';
+      }
       const metadata = {
         name,
         first_name: trimmedFirst,
         last_name: lastOrNull,
         user_type: 'creator' as const,
+        birth_date: birthDate,
         // Creator Agreement acceptance — recorded server-side by a Supabase
         // trigger that reads these signUp metadata fields. The mobile creator
         // signup screen requires the acceptance checkbox before enabling

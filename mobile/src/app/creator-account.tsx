@@ -20,7 +20,7 @@ import { CormorantGaramond_600SemiBold } from '@expo-google-fonts/cormorant-gara
 import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans';
 import SegmentedControl from '@react-native-segmented-control/segmented-control';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import Constants from 'expo-constants';
+import { getDisplayAppVersion } from '@/lib/appVersion';
 import { Shield, FileText, Info, ChevronRight, ChevronLeft, Sparkles, Pencil, Wallet, Plus } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
@@ -31,7 +31,6 @@ import useCreatorStore from '@/lib/state/creatorStore';
 import useLookStore from '@/lib/state/lookStore';
 import useProfileStore from '@/lib/state/profileStore';
 import { useAppFollowerCount } from '@/lib/queries/creatorStats';
-import useAppMetadataStore from '@/lib/state/appMetadataStore';
 import PhotoEditor from '@/components/PhotoEditor';
 import LocationAutocomplete from '@/components/LocationAutocomplete';
 import UsernameField from '@/components/UsernameField';
@@ -88,9 +87,9 @@ export default function ProfileScreen() {
 
   const followerCount = useAppFollowerCount(creatorId ?? null).data ?? 0;
 
-  const currentVersion = useAppMetadataStore((s) => s.currentVersion);
-  const fallbackVersion = Constants.expoConfig?.version ?? '—';
-  const appVersion = currentVersion ?? fallbackVersion;
+  // Actually-installed binary version (auto-updates every build) — not the
+  // hand-maintained server current_version, which drifts stale.
+  const appVersion = getDisplayAppVersion();
 
   const username = useProfileStore((s) => s.username);
   const bio = useProfileStore((s) => s.bio);

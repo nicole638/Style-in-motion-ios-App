@@ -29,6 +29,8 @@ import useProfileStore from '@/lib/state/profileStore';
 import useCreatorStore from '@/lib/state/creatorStore';
 import { supabase } from '@/lib/supabase';
 import { claimReferral } from '@/lib/queries/referral';
+import { DateOfBirthField } from '@/components/DateOfBirthField';
+import { isOldEnoughToSignUp, MIN_SIGNUP_AGE } from '@/lib/age';
 import ForgotPasswordModal from '@/components/ForgotPasswordModal';
 
 // Pending-referrer storage key — written here after a successful claim, read
@@ -92,6 +94,8 @@ export default function CreatorLoginScreen() {
   // "Create Account" button is enabled. Acceptance is recorded server-side via
   // the signUp metadata (agreement_accepted/version/source in signupAsCreator).
   const [agreementAccepted, setAgreementAccepted] = useState<boolean>(false);
+  // Age gate — must be 16+ to create an account (Apple UGC / under-13 rule).
+  const [signupDob, setSignupDob] = useState<string | null>(null);
 
   const openUrl = useCallback((url: string) => {
     WebBrowser.openBrowserAsync(url, {
@@ -142,6 +146,9 @@ export default function CreatorLoginScreen() {
     !signupPassword.trim() ||
     signupConfirmPassword.length === 0 ||
     signupPassword !== signupConfirmPassword ||
+    // Must be 16+ — a complete, valid DOB that clears the age gate.
+    !signupDob ||
+    !isOldEnoughToSignUp(signupDob) ||
     // Creator Agreement + Terms must be accepted before signup is allowed.
     !agreementAccepted;
 
@@ -247,9 +254,15 @@ export default function CreatorLoginScreen() {
         trimmedFirst,
         '',
         signupEmail.trim(),
-        signupPassword
+        signupPassword,
+        signupDob ?? ''
       );
       switch (result) {
+        case 'underage': {
+          setSignupError(`You must be at least ${MIN_SIGNUP_AGE} to create an account.`);
+          setIsSignupLoading(false);
+          return;
+        }
         case 'success': {
           const creatorId = useAuthStore.getState().creatorId!;
           useProfileStore.getState().switchCreator(creatorId);
@@ -591,6 +604,18 @@ export default function CreatorLoginScreen() {
                   autoCapitalize="words"
                   autoCorrect={false}
                   testID="signup-first-name-input"
+                />
+              </View>
+
+              {/* Age gate — must be 16+. The error shows only once a full DOB is
+                  entered that doesn't clear the gate, so it never nags mid-typing. */}
+              <View style={styles.inputContainer}>
+                <DateOfBirthField
+                  onChange={(iso) => { setSignupDob(iso); setSignupError(''); }}
+                  error={signupDob && !isOldEnoughToSignUp(signupDob)
+                    ? `You must be at least ${MIN_SIGNUP_AGE} to create an account.`
+                    : null}
+                  testID="signup-dob"
                 />
               </View>
 

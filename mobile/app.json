@@ -3,7 +3,7 @@
     "name": "Styled.in.motion",
     "slug": "styledinmotion",
     "scheme": "styledinmotion",
-    "version": "5.6",
+    "version": "5.7",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -39,7 +39,7 @@
         "ITSAppUsesNonExemptEncryption": false
       },
       "bundleIdentifier": "com.vibecode.styled.in.motion-c77kcu",
-      "buildNumber": "35",
+      "buildNumber": "36",
       "associatedDomains": [
         "applinks:app.styledinmotion.app"
       ],

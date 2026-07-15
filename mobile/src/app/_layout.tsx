@@ -5,6 +5,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as Linking from 'expo-linking';
 import { StatusBar } from 'expo-status-bar';
 import { QueryClientProvider } from '@tanstack/react-query';
+import { CreatorAgreementGate } from '@/components/CreatorAgreementGate';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -263,6 +264,9 @@ export default function RootLayout() {
         <KeyboardProvider>
           <StatusBar style="dark" />
           <RootLayoutNav />
+          {/* Blocking re-consent gate — shows only for a signed-in creator who
+              hasn't accepted the current Creator Agreement version. */}
+          <CreatorAgreementGate />
         </KeyboardProvider>
       </GestureHandlerRootView>
     </QueryClientProvider>

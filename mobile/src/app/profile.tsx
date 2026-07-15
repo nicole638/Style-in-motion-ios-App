@@ -13,7 +13,7 @@ import {
 import { Image } from 'expo-image';
 import { router, Stack } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Constants from 'expo-constants';
+import { getDisplayAppVersion } from '@/lib/appVersion';
 import { useFonts } from 'expo-font';
 import { CormorantGaramond_600SemiBold } from '@expo-google-fonts/cormorant-garamond';
 import { DMSans_400Regular, DMSans_500Medium } from '@expo-google-fonts/dm-sans';
@@ -29,7 +29,6 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import useAuthStore from '@/lib/state/authStore';
-import useAppMetadataStore from '@/lib/state/appMetadataStore';
 import { useShopperProfile } from '@/lib/hooks/useShopperProfile';
 import { persistPickedPhoto } from '@/lib/utils/persistPickedPhoto';
 import LocationAutocomplete from '@/components/LocationAutocomplete';
@@ -37,7 +36,6 @@ import LocationAutocomplete from '@/components/LocationAutocomplete';
 export default function ShopperProfileScreen() {
   const publicUser = useAuthStore((s) => s.publicUser);
   const logout = useAuthStore((s) => s.logout);
-  const currentVersion = useAppMetadataStore((s) => s.currentVersion);
 
   const { profile, loading, save, uploadPhoto, uploadingPhoto } = useShopperProfile();
 
@@ -122,8 +120,9 @@ export default function ShopperProfileScreen() {
   const email = publicUser?.email ?? profile?.email ?? '';
   const avatarUri = profile?.profile_photo_url ?? null;
   const initial = (displayName.trim().charAt(0) || '?').toUpperCase();
-  const fallbackVersion = Constants.expoConfig?.version ?? '—';
-  const appVersion = currentVersion ?? fallbackVersion;
+  // Actually-installed binary version (auto-updates every build) — not the
+  // hand-maintained server current_version, which drifts stale.
+  const appVersion = getDisplayAppVersion();
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']} testID="shopper-profile-screen">
