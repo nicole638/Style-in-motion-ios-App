@@ -216,6 +216,12 @@ export function ItemListSheet({
   const [savedPhotosCount, setSavedPhotosCount] = useState<number | null>(null);
   const [tikTokNudgeUrl, setTikTokNudgeUrl] = useState<string | null>(null);
   const [coverAspect, setCoverAspect] = useState<number | null>(null);
+  // Read-only preview for not-shoppable pieces — shows everything the creator
+  // provided (large photo, brand, price, size, note) without a shop path.
+  const [previewItem, setPreviewItem] = useState<ClothingItem | null>(null);
+  useEffect(() => {
+    if (!look) setPreviewItem(null);
+  }, [look]);
   const commentInputRef = useRef<TextInput>(null);
 
   // Reset cover aspect when look identity changes so a stale aspect from
@@ -829,7 +835,18 @@ export function ItemListSheet({
                         {rowContent}
                       </Pressable>
                     ) : (
-                      <View testID={`${testIDPrefix}-not-shoppable-${item.id}`}>{rowContent}</View>
+                      // Not shoppable, but still tappable — opens the read-only
+                      // item preview (never /api/shop).
+                      <Pressable
+                        style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                          setPreviewItem(item);
+                        }}
+                        testID={`${testIDPrefix}-not-shoppable-${item.id}`}
+                      >
+                        {rowContent}
+                      </Pressable>
                     )}
                     {alternates.map((alt, altIdx) => (
                       <Pressable
@@ -967,6 +984,57 @@ export function ItemListSheet({
               <Text style={styles.closeButtonText}>Close</Text>
             </Pressable>
           </Animated.View>
+
+          {/* Item preview overlay — rendered inside this Modal (RN can't stack
+              two Modals). Read-only: photo, name, brand, price, size, note. */}
+          {previewItem ? (
+            <View style={styles.previewOverlay} testID={`${testIDPrefix}-item-preview`}>
+              <Pressable style={styles.previewBackdrop} onPress={() => setPreviewItem(null)} />
+              <View style={styles.previewCard}>
+                {previewItem.photoUri ? (
+                  <Image
+                    source={{ uri: previewItem.photoUri }}
+                    style={styles.previewPhoto}
+                    contentFit="cover"
+                  />
+                ) : (
+                  <View style={[styles.previewPhoto, styles.previewPhotoPlaceholder]}>
+                    <Text style={{ fontSize: 56 }}>{previewItem.emoji}</Text>
+                  </View>
+                )}
+                <Text style={styles.previewName} numberOfLines={2}>
+                  {decodeHtmlEntities(previewItem.name) || previewItem.category}
+                </Text>
+                {previewItem.brand ? (
+                  <Text style={styles.previewBrand}>{decodeHtmlEntities(previewItem.brand)}</Text>
+                ) : null}
+                {previewItem.price ? (
+                  <Text style={styles.previewPrice}>${previewItem.price}</Text>
+                ) : null}
+                {previewItem.wornSize ? (
+                  <Text style={styles.previewMeta}>Size: {previewItem.wornSize}</Text>
+                ) : null}
+                {previewItem.primaryNote ? (
+                  <Text style={styles.previewNote}>{previewItem.primaryNote}</Text>
+                ) : null}
+                <View style={styles.previewPill}>
+                  <Text style={styles.previewPillText}>{NOT_SHOPPABLE_LABEL}</Text>
+                </View>
+                <Pressable
+                  onPress={() => setPreviewItem(null)}
+                  className="w-full rounded-full py-3.5 flex-row items-center justify-center bg-[#B87063] active:opacity-85 mt-4"
+                  testID={`${testIDPrefix}-item-preview-close`}
+                >
+                  <Text
+                    className="text-white text-[15px] font-semibold"
+                    style={{ fontFamily: 'DMSans_500Medium' }}
+                  >
+                    Close
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
       ) : null}
@@ -1258,6 +1326,89 @@ const styles = StyleSheet.create({
   // clearly de-emphasised — these pieces are styled, not sold.
   itemRowUnshoppable: {
     opacity: 0.7,
+  },
+  previewOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  previewCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 20,
+    marginHorizontal: 28,
+    alignSelf: 'stretch',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+  },
+  previewPhoto: {
+    width: '100%',
+    aspectRatio: 1,
+    borderRadius: 16,
+    backgroundColor: '#E0D8D0',
+  },
+  previewPhotoPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  previewName: {
+    fontFamily: 'CormorantGaramond_600SemiBold',
+    fontSize: 22,
+    color: '#1A1210',
+    marginTop: 14,
+  },
+  previewBrand: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 14,
+    color: '#6B5E58',
+    marginTop: 2,
+  },
+  previewPrice: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 16,
+    color: '#B87063',
+    marginTop: 6,
+  },
+  previewMeta: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#6B5E58',
+    marginTop: 4,
+  },
+  previewNote: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 13,
+    color: '#6B5E58',
+    fontStyle: 'italic',
+    marginTop: 6,
+  },
+  previewPill: {
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: '#F0EBE5',
+  },
+  previewPillText: {
+    fontFamily: 'DMSans_500Medium',
+    fontSize: 12,
+    color: '#6B5E58',
   },
   closeButton: {
     width: '100%',
