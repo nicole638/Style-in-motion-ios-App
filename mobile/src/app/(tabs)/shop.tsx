@@ -39,6 +39,7 @@ import CategoryChips from '@/components/CategoryChips';
 import { filterClosetItems } from '@/lib/utils/filterClosetItems';
 import { supabase } from '@/lib/supabase';
 import { openShopLink } from '@/lib/analytics/openShopLink';
+import { isShoppable, NOT_SHOPPABLE_LABEL } from '@/lib/shoppable';
 import { buildShareText, savePhotosToAlbum, shareLook, buildLookShareUrl } from '@/lib/utils/shareLook';
 import { shareToTikTok } from '@/lib/utils/shareToTikTok';
 import { TikTokPostShareNudge } from '@/components/TikTokPostShareNudge';
@@ -391,7 +392,9 @@ export default function ShopScreen() {
   };
 
   const handleShopItem = (link: string, item?: ClothingItem, look?: Look | null) => {
-    if (!link) return;
+    // '', whitespace and the legacy '#' placeholder all mean "no link" — never
+    // hit /api/shop for those (the backend would just 404).
+    if (!link || !link.trim() || link.trim() === '#') return;
     // Route through /api/shop so the affiliate tag is stamped and the click row
     // is written server-side (source=ios). Prefer look/item ids for attribution;
     // fall back to the closet-item id, else the raw url.
@@ -1052,7 +1055,7 @@ export default function ShopScreen() {
 
               {/* Items list */}
               {(selectedLook?.items ?? []).map((item) => {
-                const hasLink = item.link && item.link !== '#' && item.link !== '';
+                const hasLink = isShoppable(item);
                 const alternates = (item.alternates ?? []).filter(a => a?.link && a.link.trim());
                 const hasAlternate = alternates.length > 0;
                 return (
@@ -1097,7 +1100,7 @@ export default function ShopScreen() {
                             <Text style={styles.detailShopLabel}>Shop →</Text>
                           </Pressable>
                         ) : (
-                          <Text style={styles.detailSoonLabel}>Soon</Text>
+                          <Text style={styles.detailSoonLabel}>{NOT_SHOPPABLE_LABEL}</Text>
                         )}
                       </View>
                     </Pressable>

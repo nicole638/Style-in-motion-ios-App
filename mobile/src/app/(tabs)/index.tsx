@@ -43,6 +43,7 @@ import { FoundingCreatorMonthRail } from '@/components/FoundingCreatorMonthRail'
 import { FoundingCreatorPill } from '@/components/FoundingCreatorPill';
 import { InviteCreatorSheet } from '@/components/InviteCreatorSheet';
 import { openShopLink } from '@/lib/analytics/openShopLink';
+import { isShoppable, NOT_SHOPPABLE_LABEL } from '@/lib/shoppable';
 import StorefrontSwitcher from '@/components/StorefrontSwitcher';
 
 const { width, height: screenHeight } = Dimensions.get('window');
@@ -456,7 +457,7 @@ export default function HomeScreen() {
 
               {/* Items list */}
               {(selectedLook?.items ?? []).map((item) => {
-                const hasLink = item.link && item.link !== '#' && item.link !== '';
+                const hasLink = isShoppable(item);
                 const alternates = (item.alternates ?? []).filter(a => a?.link && a.link.trim());
                 const hasAlternate = alternates.length > 0;
                 return (
@@ -515,7 +516,7 @@ export default function HomeScreen() {
                             <Text style={styles.detailShopLabel}>Shop →</Text>
                           </Pressable>
                         ) : (
-                          <Text style={styles.detailSoonLabel}>Soon</Text>
+                          <Text style={styles.detailSoonLabel}>{NOT_SHOPPABLE_LABEL}</Text>
                         )}
                       </View>
                     </Pressable>

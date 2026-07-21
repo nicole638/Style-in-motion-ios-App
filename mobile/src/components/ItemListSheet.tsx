@@ -48,6 +48,7 @@ import useSavedLooksStore from '@/lib/state/savedLooksStore';
 import useAnalyticsStore from '@/lib/state/analyticsStore';
 import { logClickEvent } from '@/lib/analytics/clickEvents';
 import { openShopLink } from '@/lib/analytics/openShopLink';
+import { isShoppable, NOT_SHOPPABLE_LABEL } from '@/lib/shoppable';
 import { useBrandIdentity } from '@/lib/queries/storefront';
 import { supabase } from '@/lib/supabase';
 import { Bookmark, Sparkles, UserPlus, UserCheck, Heart } from 'lucide-react-native';
@@ -280,6 +281,9 @@ export function ItemListSheet({
   const handleShop = useCallback(
     async (item: ClothingItem, index: number) => {
       if (!look) return;
+      // Linkless piece (vintage/personal) — no /api/shop call, no analytics.
+      // The row isn't pressable for these, but guard anyway.
+      if (!isShoppable(item)) return;
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       incrementClicks(look.id);
       useAnalyticsStore.getState().trackItemClick(look.id, look.creatorId ?? '', item.name, index);
@@ -753,11 +757,11 @@ export function ItemListSheet({
               ) : null}
 
               {look.items.filter(i => !i.archived).map((item, itemIndex) => {
-                const hasLink = item.link && item.link !== '#' && item.link !== '';
+                const hasLink = isShoppable(item);
                 const alternates = (item.alternates ?? []).filter(a => a?.link && a.link.trim());
                 const hasAlternate = alternates.length > 0;
                 const rowContent = (
-                  <View style={styles.itemRow}>
+                  <View style={hasLink ? styles.itemRow : [styles.itemRow, styles.itemRowUnshoppable]}>
                     {item.photoUri ? (
                       <Image
                         source={{ uri: item.photoUri }}
@@ -810,7 +814,7 @@ export function ItemListSheet({
                     {hasLink ? (
                       <Text style={styles.shopLabel}>Shop →</Text>
                     ) : (
-                      <Text style={styles.soonLabel}>Soon</Text>
+                      <Text style={styles.soonLabel}>{NOT_SHOPPABLE_LABEL}</Text>
                     )}
                   </View>
                 );
@@ -825,7 +829,7 @@ export function ItemListSheet({
                         {rowContent}
                       </Pressable>
                     ) : (
-                      <View>{rowContent}</View>
+                      <View testID={`${testIDPrefix}-not-shoppable-${item.id}`}>{rowContent}</View>
                     )}
                     {alternates.map((alt, altIdx) => (
                       <Pressable
@@ -1249,6 +1253,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#6B5E58',
     marginLeft: 12,
+  },
+  // Web parity (look page renders linkless cards at opacity-70): visible but
+  // clearly de-emphasised — these pieces are styled, not sold.
+  itemRowUnshoppable: {
+    opacity: 0.7,
   },
   closeButton: {
     width: '100%',

@@ -23,6 +23,7 @@ import { ItemListSheet } from '@/components/ItemListSheet';
 import { decodeHtmlEntities } from '@/lib/decode-entities';
 import { logClickEvent } from '@/lib/analytics/clickEvents';
 import { CLICK_SOURCE } from '@/lib/analytics/source';
+import { isShoppable, NOT_SHOPPABLE_LABEL } from '@/lib/shoppable';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_GAP = 8;
@@ -87,8 +88,10 @@ export default function SavedScreen() {
   }, []);
 
   const handleShopItem = useCallback(async (item: SavedItem) => {
-    const link = item.link;
-    if (!link || link === '#' || link === '') return;
+    // Linkless piece (vintage/personal) — card isn't pressable for these, but
+    // guard anyway so /api/shop is never called without a usable URL.
+    if (!isShoppable({ link: item.link, affiliate_url: item.affiliateUrl })) return;
+    const link = (item.link ?? '').trim() ? item.link! : item.affiliateUrl!;
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     const baseUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
@@ -297,13 +300,10 @@ export default function SavedScreen() {
           <View style={styles.grid} testID="saved-items-grid">
             {itemRows.map((row, rowIdx) => (
               <View key={`item-row-${rowIdx}`} style={styles.gridRow}>
-                {row.map((item) => (
-                  <Pressable
-                    key={item.id}
-                    style={styles.itemCard}
-                    onPress={() => handleShopItem(item)}
-                    testID={`saved-item-${item.id}`}
-                  >
+                {row.map((item) => {
+                  const shoppable = isShoppable({ link: item.link, affiliate_url: item.affiliateUrl });
+                  const cardInner = (
+                    <>
                     <View style={{ position: 'relative' }}>
                       {item.photoUri ? (
                         <Image
@@ -330,12 +330,35 @@ export default function SavedScreen() {
                       {item.brand ? (
                         <Text style={styles.itemBrand} numberOfLines={1}>{decodeHtmlEntities(item.brand)}</Text>
                       ) : null}
-                      {item.price ? (
+                      {!shoppable ? (
+                        <Text style={styles.notShoppableLabel} numberOfLines={1}>{NOT_SHOPPABLE_LABEL}</Text>
+                      ) : item.price ? (
                         <Text style={styles.itemPrice} numberOfLines={1}>${item.price}</Text>
                       ) : null}
                     </View>
-                  </Pressable>
-                ))}
+                    </>
+                  );
+                  return shoppable ? (
+                    <Pressable
+                      key={item.id}
+                      style={styles.itemCard}
+                      onPress={() => handleShopItem(item)}
+                      testID={`saved-item-${item.id}`}
+                    >
+                      {cardInner}
+                    </Pressable>
+                  ) : (
+                    // Linkless (vintage/personal) piece — visible, dimmed, not
+                    // tappable. The unsave bookmark inside still works.
+                    <View
+                      key={item.id}
+                      style={[styles.itemCard, styles.itemCardUnshoppable]}
+                      testID={`saved-item-${item.id}`}
+                    >
+                      {cardInner}
+                    </View>
+                  );
+                })}
                 {row.length === 1 ? <View style={{ width: CARD_WIDTH }} /> : null}
               </View>
             ))}
@@ -542,6 +565,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#B87063',
     marginTop: 3,
+  },
+  notShoppableLabel: {
+    fontFamily: 'DMSans_400Regular',
+    fontSize: 11,
+    color: '#8C8580',
+    marginTop: 3,
+  },
+  // Web parity: linkless cards render at opacity-70 — visible, deliberate,
+  // not an error state.
+  itemCardUnshoppable: {
+    opacity: 0.7,
   },
   // Empty states
   emptyContainer: {

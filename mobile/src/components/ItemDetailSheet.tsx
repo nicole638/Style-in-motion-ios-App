@@ -32,6 +32,7 @@ import { consignEligibility, type ConsignEligibility } from '@/lib/consignment/e
 import { supabase } from '@/lib/supabase';
 import { logClickEvent } from '@/lib/analytics/clickEvents';
 import { CLICK_SOURCE } from '@/lib/analytics/source';
+import { isShoppable } from '@/lib/shoppable';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -140,14 +141,16 @@ export function ItemDetailSheet({
   }));
 
   const handleShop = useCallback(async () => {
-    if (!item?.link || item.link === '#') return;
+    // Linkless piece — never call /api/shop (backend would 404). The Shop row
+    // isn't rendered for these, but guard anyway.
+    if (!item || !isShoppable(item)) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     const baseUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
     const useEf = !!(baseUrl && item.lookItemId && item.lookId);
     const url = useEf
       ? `${baseUrl}/api/shop?lookId=${encodeURIComponent(item.lookId!)}&itemId=${encodeURIComponent(item.lookItemId!)}&source=${CLICK_SOURCE}`
-      : item.link;
+      : (item.affiliate_url?.trim() || item.link);
     // /api/shop writes the click row server-side (full 3-tier tag resolution +
     // source='ios' from the query param). Only log directly on the bypass path.
     if (!useEf) {
@@ -184,6 +187,25 @@ export function ItemDetailSheet({
       return;
     }
     if (item.lookId) {
+      router.push({
+        pathname: '/(tabs)/create',
+        params: { editLookId: item.lookId, editItemId: item.id },
+      });
+    } else {
+      router.push({
+        pathname: '/add-closet-item',
+        params: { editItemId: item.id },
+      });
+    }
+  }, [item, onClose, collageEditable]);
+
+  // "Add a link" on a linkless item — always route to the item editor (never
+  // the collage builder, which can't edit links).
+  const handleAddLink = useCallback(() => {
+    if (!item?.id) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    onClose();
+    if (item.lookId && !collageEditable) {
       router.push({
         pathname: '/(tabs)/create',
         params: { editLookId: item.lookId, editItemId: item.id },
@@ -373,7 +395,7 @@ export function ItemDetailSheet({
     return () => { cancelled = true; };
   }, [item?.id, elig?.eligible, isItemInPublishedLook]);
 
-  const hasLink = !!(item?.link && item.link !== '#');
+  const shoppable = isShoppable(item);
   const isArchived = !!item?.archived;
   const hasLookContext = !!item?.lookId;
 
@@ -453,14 +475,24 @@ export function ItemDetailSheet({
 
                 <View style={styles.actionCard}>
                   {/* Shopper items have no shop link and shoppers don't shop
-                      their own closet — hide the Shop row for them. */}
-                  {isShopper ? null : (
+                      their own closet — hide the Shop row for them. For the
+                      creator's own linkless pieces (often intentional — vintage
+                      or personal), offer "Add a link" instead of a dead Shop
+                      row; it routes into the item editor. */}
+                  {isShopper ? null : shoppable ? (
                     <ActionRow
                       icon={ExternalLink}
-                      label={hasLink ? 'Shop' : 'No link yet'}
+                      label="Shop"
                       onPress={handleShop}
                       variant="accent"
                       testID={`${testIDPrefix}-shop`}
+                    />
+                  ) : (
+                    <ActionRow
+                      icon={Pencil}
+                      label="Add a link"
+                      onPress={handleAddLink}
+                      testID={`${testIDPrefix}-add-link`}
                     />
                   )}
                   {/* Edit Collage stays for shopper collage looks (routes to the
