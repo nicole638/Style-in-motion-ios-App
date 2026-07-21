@@ -1,7 +1,19 @@
 # Styled in Motion — Change Log / Handoff
 
 Running log of cross-cutting changes so multiple sessions stay in sync.
-Last updated: 2026-06-05 (storefront iOS plumb). Scope: the **mobile** app (`/home/user/workspace/mobile`).
+Last updated: 2026-07-21 (linkless-shop fix + not-shoppable preview + TikTok share fix). Scope: the **mobile** app.
+
+## 2026-07-21 — Shop dead-tap fix, Not-shoppable preview, TikTok share fix (commits 5d66141, 0eaa496, 9bc36de)
+
+- `src/lib/shoppable.ts` (NEW) — single source of truth `isShoppable()` (affiliate_url OR url; null/''/whitespace/'#' = no link) + `NOT_SHOPPABLE_LABEL`. Mirrors web `resolveOutboundUrl()`.
+- `src/components/ItemListSheet.tsx` — linkless rows: dimmed (0.7), "Not shoppable" label (was "Soon"), tappable → NEW in-modal read-only preview card (large photo, name, brand, price, worn size, note, pill, Close). Never calls /api/shop for linkless items.
+- `src/components/ItemDetailSheet.tsx` — creator's linkless items show "Add a link" (routes to item editor, never collage builder) instead of a dead "No link yet" Shop row; bypass URL prefers affiliate_url.
+- `src/app/(public-tabs)/saved.tsx` — linkless saved cards: not pressable, dimmed, "Not shoppable" replaces price; bookmark still works.
+- `src/app/(tabs)/shop.tsx` + `src/app/(tabs)/index.tsx` — hasLink → isShoppable(); "Soon" → "Not shoppable"; trim/'#' guard on shop handler.
+- `src/lib/utils/downloadToCache.ts` (NEW) — resolve any image URI to a local file:// in cacheDirectory (no photo-library side effects; caller owns cleanup).
+- `src/lib/utils/shareToTikTok.ts` — SDK now receives a LOCAL file (wrapper saves to Photos itself; remote https → "Failed to save media"). Dropped redundant app-side savePhotoToLibrary (single Photos save), permission denial → 'permission-denied' outcome, errorCode/subErrorCode appended to failure alerts, temp cleaned in finally. savePhotoToLibrary untouched (IG flow).
+- `app.json` — version 5.9 (Apple closes an approved train — bump marketing version EVERY TestFlight push); iOS buildNumber 39; Android blockedPermissions += FOREGROUND_SERVICE, FOREGROUND_SERVICE_LOCATION, FOREGROUND_SERVICE_MEDIA_PLAYBACK, ACCESS_*_LOCATION (Play rejection fix); android versionCode 39.
+- SHIP STATE: 5.9 (38) on TestFlight (linkless fix only). 5.9 (39) built+parked on EAS (adds preview). TikTok fix is committed, NOT yet built. **Do not auto-submit — Nicole batches fixes and gates every ship.**
 Stack: Expo 54 / RN 0.81.5 / NativeWind 4.2.1 / Tailwind 3.4.18.
 
 > MAINTENANCE: Keep this file current. Any session that changes code here must append an
